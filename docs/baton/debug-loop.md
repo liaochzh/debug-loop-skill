@@ -1,10 +1,11 @@
 # debug-loop skill：settle/findtap 判据 + 文档下沉（baton）
 
-> 最后更新：2026-10-27
-> 本文件 owner：`~/.config/opencode/skills/debug-loop` 这条线。方案见 `docs/plan/20261027-debugloop-next.md`，审查见 `docs/review/debugloop-next.md` / `.r2.md`。
+> 最后更新：2026-10-28
+> 本文件 owner：`~/.config/opencode/skills/debug-loop` 这条线（**目录级软链** → `~/Projects/debug-loop-skill`，GitHub `liaochzh/debug-loop-skill`，private）。方案见 `docs/plan/20261027-debugloop-next.md`，审查见 `docs/review/debugloop-next.md` / `.r2.md`。
 
 ## 模块结构
-- skill 根：`~/.config/opencode/skills/debug-loop/`（**不是 git 仓库**，回滚只能靠 `~/debug-loop-snap-20261027/` 逐文件 `cp`）
+- skill 根：`~/.config/opencode/skills/debug-loop` → 软链到 `~/Projects/debug-loop-skill`（**2026-10-28 起是 git 仓库**，局部 `user.email=liaochzh@gmail.com`；文档已从 `~/docs/` 迁回本仓 `docs/`）
+- 历史回滚点：`~/debug-loop-snap-20261027/`（入库前的快照；现可直接 `git revert`/`git checkout`）
 - 判据公共段：`scripts/android/_common.sh`（`MIN_DUMP_BYTES` / `SETTLE_MIN_PNG_BYTES` / `SETTLE_FRAME_ALARM` / `ui_has_semantics()`）
 - 被测对象：`scripts/android/settle.sh`、`scripts/android/findtap.sh`
 - 回归：`scripts/test_common.sh`（G1–G12，100 项）、`scripts/test_bg.sh`（215 项，约 33s）
