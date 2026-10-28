@@ -57,7 +57,9 @@
 - 脚本只做**快进**：远端有本地没有的提交 ⇒ rc=1 拒绝，**不提供 `--force`**；只碰远端，不改本地历史与工作区（SHA 保真）。
 - 退出码：`0` 已推送/已同步 · `1` 策略或前置拒绝（非白名单/分叉/白名单缺失）· `2` 用法错误 · `3` 网络或传输失败。
 - 方案与验收：`~/docs/plan/20261028-publish-channel.md`（v2，含 V1–V10 实测）。
-- 远端：`liaochzh/debug-loop-skill`（private）；skill 目录通过软链 `~/.config/opencode/skills/debug-loop` 指向本仓。
+- 远端：`liaochzh/debug-loop-skill`（**public**，2026-10-28 起）；skill 目录通过软链 `~/.config/opencode/skills/debug-loop` 指向本仓。
+- ⚠️ **脱敏纪律**：本仓已公开，历史与工作树均不含真实设备/内部产品标识。写入新内容时沿用占位值——设备号 `R58M00TEST1`、包名 `com.example.demo`、示例工程 `sample_pro`、家目录路径 `<home>/…`（权限 pattern 需绝对拼写时用 `<home>` 指代，不要写真实用户名）。
+- 旧历史（含真实设备号）保留在私有归档仓 `liaochzh/debug-loop-skill-private-archive`，**勿公开**；确认无需回溯后可整仓删除。
 - ⚠️ 不得绕过 `publish.sh` 直推（如用 `gh api` 改 ref）：白名单只约束经本脚本的调用，旁路靠档位纪律兜底。
 
 ## 踩过的坑
