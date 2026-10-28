@@ -87,3 +87,7 @@ bash scripts/test_bg.sh        # 215 项，临时目录构造假项目
 | Windows | 只能在 Windows 上构建（见 `references/windows-setup.md`） |
 
 缺工具时 `doctor.sh` 会分级标出，**不会自动安装**（`brew` / `npm -g` 属用户动作）。
+
+## License
+
+MIT（见 `LICENSE`）。
