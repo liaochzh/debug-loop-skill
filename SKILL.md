@@ -60,7 +60,7 @@ metadata:
   原因：本 skill 在 subagent 档是「**白名单 + 兜底 `deny`**」，白名单之外的复合行会落兜底 `deny`（**秒拒**，不再挂 1 h）。
   ⚠️ 白名单按**逐段判权**（引擎实测）：复合命令中**任一段**不可达 `allow` ⇒ **整条拒**（故 `&&` / `;` 串联基本不可用）。
 - **白名单命令形态**（B6-1 后；2026-10-23 起仅留实存拼写）：`bash <home>/.config/opencode/skills/debug-loop/scripts/*`
-  —— **唯一放行的绝对拼写**（镜像路径 `<home>/code/opencode-skills/…` 已随死规则清理移除，该目录本机从未实存）；
+  —— **唯一放行的绝对拼写**（`<home>` 指本机家目录；镜像路径 `<home>/code/opencode-skills/…` 已随死规则清理移除，该目录从未实存）；
   `~` 形式**不放行**（`shell` 的 pattern 侧**不展开** `~`）。
 - **单命令放行集**（2026-10-23 实测，均为**单条**命令）：`adb *`、`ls *`、`pwd`、`head *`、`tail *`、`wc *`、`grep *`、`which *`、
   `flutter build *` / `flutter test*` / `flutter analyze*`、`maestro *`、`appium *`、`xcrun *`、`screencapture *`、`echo *`、
