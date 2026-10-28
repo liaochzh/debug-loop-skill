@@ -1,0 +1,12 @@
+# macOS / 编辑器
+.DS_Store
+*.swp
+
+# 运行时临时产物
+*.log
+__pycache__/
+*.pyc
+
+# 在 skill 目录内直接跑过脚本时留下的后台任务现场（不属于源码）
+scripts/build/
+build/
