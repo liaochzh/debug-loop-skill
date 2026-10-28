@@ -48,12 +48,17 @@
 - 若重验空树分支：按上面「复现空树场景的方法」四步走即可（约 3 分钟，Gradle 首次构建 ~60s）。
 
 ## 发布（推送到 GitHub）
-- 本机权限层对所有 agent 硬性 deny `git push*`（build / autoDebug / commit 档），**不要反复重试**；改用
-  `python3 ~/.config/opencode/scripts/gh_push.py --repo ~/Projects/debug-loop-skill`
-  （Git Data API 重放 blob→tree→commit→ref，仅快进，push 后自动 `git fetch` + `reset --mixed` 对齐）。
-- 副作用须知道：GitHub 把作者时间归一化为 UTC ⇒ **重放后的 commit SHA 与本地原 SHA 不同**，作者/邮箱不变；
-  本地历史以远端为准。`--dry-run` 可先看要推哪些提交。
+- 本机权限层对所有 agent 硬性 deny `git push*`（build / autoDebug / commit 档），**不要反复重试**；agent 唯一发布入口是白名单脚本：
+  ```bash
+  bash ~/.config/opencode/scripts/publish.sh ~/Projects/debug-loop-skill          # 发布当前分支
+  bash ~/.config/opencode/scripts/publish.sh ~/Projects/debug-loop-skill --dry-run # 只看计划
+  ```
+  白名单：`~/.config/opencode/publish-allowlist`（一行一个 `owner/repo`，精确匹配、不支持通配；**只能人工编辑**）。
+- 脚本只做**快进**：远端有本地没有的提交 ⇒ rc=1 拒绝，**不提供 `--force`**；只碰远端，不改本地历史与工作区（SHA 保真）。
+- 退出码：`0` 已推送/已同步 · `1` 策略或前置拒绝（非白名单/分叉/白名单缺失）· `2` 用法错误 · `3` 网络或传输失败。
+- 方案与验收：`~/docs/plan/20261028-publish-channel.md`（v2，含 V1–V10 实测）。
 - 远端：`liaochzh/debug-loop-skill`（private）；skill 目录通过软链 `~/.config/opencode/skills/debug-loop` 指向本仓。
+- ⚠️ 不得绕过 `publish.sh` 直推（如用 `gh api` 改 ref）：白名单只约束经本脚本的调用，旁路靠档位纪律兜底。
 
 ## 踩过的坑
 - 用「字节数 ≥1024」判空树是错的：旧的「1099 B 空树」实例其实是 **iOS pageSource**；真机实测 Android Flutter 空树 dump = **3418 B（3.4 KB）** > 1024 ⇒ 字节阈值**必然漏判**，判据只能数语义节点。
