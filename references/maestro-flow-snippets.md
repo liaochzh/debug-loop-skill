@@ -51,10 +51,11 @@ bash <S>/scripts/maestro/assert.sh "成功页面标题"  # 断言不可用/失�
 bash <S>/scripts/snapshot.sh --platform android    # 一次快照（同时落盘 build/debug/last_snapshot.json）
 bash <S>/scripts/assert_page.sh --file docs/test/a.txt --platform android
 bash <S>/scripts/tap_snapshot.sh "目标按钮" --platform android   # 命中缓存 <1 s，输出 ♻️ 复用快照 (age=Ns)
-bash <S>/scripts/android/settle.sh
 bash <S>/scripts/snapshot.sh --platform android --diff   # 变了什么？（基线自动取 prev，见下）
-bash <S>/scripts/assert_page.sh --file docs/test/b.txt --platform android   # rc=0 只代表点击已送达，必须另断言
+bash <S>/scripts/assert_page.sh --file docs/test/b.txt --platform android --wait 10   # rc=0 只代表点击已送达，必须另断言
 ```
+
+**推荐顺序（省时）**：点击 → `assert_page.sh --wait 10` 直接轮询到通过（Android 每轮单 dump 约 2.5–3 s，取代「`settle.sh` 5–11 s + 一次断言 5.7 s」）；要看「变了什么」再跑 `--diff`（`--wait` 用 `--no-cache` 轮询，通过后才落盘，因此 `--diff` 的基线仍是点击前那一页）。断言失败（rc=1）会自动附「与上一份快照的差异」到 stderr，不必再单独 dump。
 
 - 先 `--dry-run` 只算坐标不点：`tap_snapshot.sh "目标按钮" --dry-run`（输出 `命中 N 处…center=(x,y)`）。
 - 多命中取第 N 个：`--index 2`；精确匹配（区分 `Add` / `Add device`）：`--exact`；只按资源 id：`--id`。
@@ -76,7 +77,7 @@ bash <S>/scripts/assert_page.sh --file docs/test/b.txt --platform android   # rc
 
 - `+` 新增 / `-` 消失 / `~ text|pos|clickable` 变化；header 计数是**截断前全量**（示例 6 项全列出；超过 `--max-diff` 时截断并补「另有 N 项」）。
 - **`~ text` 只代表文本刷新**（时间戳/进度），不代表跳转；`+` 多 `-` 少通常是跳转后节点更多，不是「凭空新增」。
-- 必须**点击 → `settle.sh` → `--diff`**：动画中间帧会刷出满屏 `~ pos`。
+- 必须**点击 → 等页面稳定 → `--diff`**：动画中间帧会刷出满屏 `~ pos`。等稳定的首选是 `assert_page.sh --wait 10`（断言即判据），只有「不关心内容、只要页面别动」时才用 `android/settle.sh`。
 - 基线优先级 `--against <json>` > `last` > `prev`；隐式基线（`last`/`prev`）要求 `dialect` 与 `_meta.platform` 一致，不符 ⇒ rc=1 且**不降级**（跨平台/换方言请显式 `--against`，此时只 ⚠️ 仍输出）。
 - 无基线时 rc=1，但本次快照已落盘 ⇒ 再跑一次 `--diff` 即可看变化；`--diff` 与 `--json` 互斥（rc=2）。
 
