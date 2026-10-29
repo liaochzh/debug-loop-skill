@@ -37,8 +37,29 @@ metadata:
   需要新一轮事实时，先问「上一条证据缺什么」，而不是把同样的命令再跑一次。
 - **脚本的 `💡` 提示优先于自行重规划**：失败输出里的处置建议（降级路径、候选清单、`ui.sh rc=N`）就是下一手依据；
   先按提示做一次，再考虑换思路。
-- 解析优先级（由强到弱，**不得跳级**）：**语义/文本定位**（Maestro → `ui.sh`/`findtap.sh`）＞ **Vision 视觉定位** ＞ **坐标**。
+- 解析优先级（由强到弱，**不得跳级**）：**语义/文本定位**（Maestro → `tap_snapshot.sh` → `ui.sh`/`findtap.sh`）＞ **Vision 视觉定位** ＞ **坐标**。
   坐标是兜底，用前必须 `shot.sh` 看过当前页；用了坐标就要在回报里写明「坐标兜底 + 已截图确认」。
+
+### 页面观测阶梯（强制）
+
+判定页面状态按 L0 → L1 → L2 逐级取证据，**不得跳级，也不得用截图代替可断言的证据**：
+
+| 层 | 手段 | 成本 | 能支撑的主张 |
+|---|---|---|---|
+| L0 断言 | `assert_page.sh`（Android / iOS / macOS） | 1 行输出 | 「界面呈现符合预期」 |
+| L1 摘要 | `snapshot.sh`（≤40 行 + 指纹） | ~600 token | 「当前页面有哪些元素」 |
+| L1 变化 | `snapshot.sh --diff`（≤20 行变化清单） | ~150 token | 「刚才那一下，页面变了什么」 |
+| L2 截图 | `shot.sh` + `Read` | 视觉信息 | 仅「视觉呈现」 |
+
+- 先用 L0：把期望写成断言（`has` / `has-not` / `count` / `match`），拿 rc 与一行结论。
+- 断言失败或需看全貌时用 L1：摘要带 `fingerprint`，可判断「页面是否切换」。
+- **仅以下 5 类允许 L2**：① `snapshot.sh` exit 4（语义树为空）；② 视觉类问题（遮挡/错位/颜色）与瞬态提示（toast/snackbar/红色报错）；③ 需给人看的取证；④ 坐标兜底前确认；⑤ 危险操作（解绑/删除/付款）点击前确认。
+  > ④ 的例外：**与点击同源于同一时刻语义快照**的坐标（`tap_snapshot.sh`、`snapshot.sh --center` + `tap.sh x y`）**不属于坐标兜底**，免 `shot.sh` 前置；危险操作（⑤）仍需确认。
+- 截图默认**只报路径、不 `Read`**；确需 Read 须在回报写明理由。
+- ⚠️ `snapshot.sh` exit 4 ≠ 页面空白：表示页面无文本/可点击节点（需 App 侧 `Semantics`），不要判成 Bug。
+- ⚠️ 指纹只用于「页面稳定时」判切换：自动刷新页（实时预览/时间戳/缩略图）fp 会自行漂移（实测同页 3 秒内 3 个不同 fp）⇒ 这类页面判「点击/跳转是否生效」必须用 `assert_page.sh` 的目标文本，不能只看 fp。
+- **判「变了什么」用 `snapshot.sh --diff`**（不要只看 fp）：输出 `+`/`-`/`~text`/`~pos`/`~clickable` 与 header 计数；`~ text` 只代表文本刷新（时间戳），`+` 多 `-` 少通常是跳转后节点更多。它**不省 dump**（仍是一次新快照），省的是 token 与判据。点击后先 `settle.sh` 再 `--diff`，否则满屏 `~pos` 是动画中间帧。
+- 通道选择：Android 用 `snapshot + assert_page`（秒级）；iOS 模拟器 ≥3 条 `has/has-not` 用 `maestro/assert_batch.sh`（单次 flow），含 `count/match` 或需摘要用 `snapshot + assert_page`。
 - **工程类型差异**（`pubspec.yaml` 存在与否自动探测）：
 
   | 能力 | Flutter 工程 | 原生 Android 工程 |
@@ -59,9 +80,12 @@ metadata:
 - **单命令纪律**：一条 `shell` 只跑**单条命令**；多步串联 / 条件 / 循环一律**写进脚本**再 `bash <S>/scripts/…` 调用。
   原因：本 skill 在 subagent 档是「**白名单 + 兜底 `deny`**」，白名单之外的复合行会落兜底 `deny`（**秒拒**，不再挂 1 h）。
   ⚠️ 白名单按**逐段判权**（引擎实测）：复合命令中**任一段**不可达 `allow` ⇒ **整条拒**（故 `&&` / `;` 串联基本不可用）。
-- **白名单命令形态**（B6-1 后；2026-10-23 起仅留实存拼写）：`bash <home>/.config/opencode/skills/debug-loop/scripts/*`
-  —— **唯一放行的绝对拼写**（`<home>` 指本机家目录；镜像路径 `<home>/code/opencode-skills/…` 已随死规则清理移除，该目录从未实存）；
-  `~` 形式**不放行**（`shell` 的 pattern 侧**不展开** `~`）。
+- **白名单命令形态**（B6-1 后；2026-10-23 起仅留实存拼写），共三条 allow：
+  1. `bash <home>/.config/opencode/skills/debug-loop/scripts/*`
+  2. `bash <home>/Projects/debug-loop-skill/scripts/*`（上面目录的 **symlink 目标**，与 1 是同一条目，改一处即两处生效）
+  3. `<home>/.config/opencode/skills/debug-loop/scripts/*`（**裸路径**形态，不带 `bash` 前缀）
+  另放行 `python3 <…>/scripts/vision/vision_read.py*` 与 `python3 <…>/scripts/appium/driver.py*`。
+  `~` 形式**不放行**（`shell` 的 pattern 侧**不展开** `~`）；`<home>/code/opencode-skills/…` 已随死规则清理移除，该目录从未实存。
 - **单命令放行集**（2026-10-23 实测，均为**单条**命令）：`adb *`、`ls *`、`pwd`、`head *`、`tail *`、`wc *`、`grep *`、`which *`、
   `flutter build *` / `flutter test*` / `flutter analyze*`、`maestro *`、`appium *`、`xcrun *`、`screencapture *`、`echo *`、
   `printenv *`、`git status *` / `git diff *`。
@@ -77,6 +101,25 @@ metadata:
   > 需要一次性多步逻辑时：写进 skill 内脚本再 `bash <S>/scripts/…` 调用（`bash …/scripts/*` 在白名单内）。
   > `$TMPDIR` 临时脚本配方（`mkdir -p "$T"; cat > …`）在 **build/debug 档**可用，在 **autoDebug 档不可用**（无 `mkdir`、写重定向被 deny）。
 
+## 页面快照与断言（`<S>/scripts/` — 跨平台）
+
+| 命令 | 耗时（实测中位） | 说明 |
+|---|---|---|
+| `snapshot.sh [--platform android\|ios\|ios-device\|macos] [--max 40] [--json] [--center] [--wait-stable] [--no-cache]`<br>`snapshot.sh --diff [--against <json>] [--max-diff 20]` | Android **5.7 s**（双 dump）；iOS 模拟器 **15.3 s**（`maestro hierarchy`）；iOS 真机 **待实测**；`--diff` 不额外加时（复用本次 dump） | 页面结构化摘要：`i\|type\|text\|id\|bounds\|clickable` + 指纹（`--center` 追加第 7 列 `cx,cy`，无中心为 `-`）。Android 走 `uiautomator dump`（默认双 dump，覆盖语义树懒激活；设备侧 `/sdcard/ui_snapshot.xml`）；**iOS 模拟器走 `maestro hierarchy --compact`**（实测 Appium pageSource 对 Flutter 恒为空树）；iOS 真机/macOS 走 Appium page source。`--json` 为断言/点击专用全量（不截断，每条含 `center`），默认摘要 text 截断 40 字符、最多 `--max` 行。**`--diff`**：输出变化清单（TAB 分隔，取代摘要）——header `# diff baseline=… fp=旧→新 nodes=M: +a -b ~c (text/pos/clickable)` + `+`/`-`/`~text`/`~pos`/`~clickable` 行（≤`--max-diff`，截断补「另有 N 项」；计数恒为截断前全量）。基线优先级 `--against` > `last_snapshot.json` > `prev_snapshot.json`；**隐式基线强制校验 `dialect`+`_meta.platform`**（不符 ⇒ 跳过且不降级读 `prev`，rc=1），显式 `--against` 跨平台只 ⚠️ 仍输出；`--diff`+`--json` 互斥（rc=2）；`--diff` 无基线时 rc=1 但**本次观测仍落缓存**（再跑一次即可看变化）。**缓存**：任一**观测成功**快照（含摘要/`--diff` 模式）落盘 `build/debug/last_snapshot.json`（含 `_meta.platform/ts`）供 `tap_snapshot.sh` 复用与 `--diff` 当基线，写前把旧 `last` 轮转为 `prev_snapshot.json`（**只作 diff 基线，不作坐标来源**）；`--no-cache` 关闭写入。退出码：`0` 成功（`--diff` 时无论有无变化）/ `1` 可重试或无可用基线 / `2` 用法错 / `3` 平台不支持 / `4` 语义树为空 |
+| `assert_page.sh --file <断言文件> [--platform P] [--with-logs N]` | Android **5.7 s**（含一次快照）；iOS 模拟器 = snapshot 耗时 + 断言开销（未单独计时） | 声明式断言：`has` / `has-not` / `match` / `not-match` / `count <正则> <N>`。输出一行 `✅ 3/3 PASS` 或 `❌ 1/3 FAIL` + ≤5 条差异。退出码：`0` 全过 / `1` 有失败 / `2` 用法错 / `3` 平台不可用 / `4` 语义树为空 / `5` 快照失败 |
+| `maestro/assert_batch.sh <断言文件>` | iOS 模拟器 **15.6 s**（3 条，单次 flow）；Android 未单独计时 | 多条 `has`/`has-not` 合并为**单个** YAML 单次 `flow.sh`（避免 N 次 JVM 冷启动）；`count`/`match` 无 Maestro 对应物，会明确拒绝。⚠️ 语义为**精确文本、大小写敏感**（同 `assertVisible`）；子串/忽略大小写/数量请用 `assert_page.sh` |
+| `tap_snapshot.sh "<文本>" [--id] [--index N] [--exact] [--dry-run] [--fresh] [--max-age 60] [--keep-cache] [--json] [--platform android\|macos] [--input <snapshot.json>]` | 命中缓存 **<1 s**；无缓存 ≈ 一次 `snapshot.sh` + 点击（Android 合计 ~6 s） | 用快照 `bounds` 的中心点做**坐标点击**（一次快照 → 点击）。匹配语义 = `assert_page` 的 `has`（text∪id、字面包含、忽略大小写；`--exact` 精确且大小写敏感），**是 `tap.sh --text` 的超集**（能点 `clickable=false` 的文本节点，此时打 ⚠️）。**缓存**：复用 `snapshot.sh` 落盘的 `last_snapshot.json`（TTL 默认 60 s、按 `_meta.platform` 校验；点击成功后 `last` 轮转为 `prev_snapshot.json`（只作 `snapshot.sh --diff` 的基线，**绝不**作坐标来源），`--keep-cache` 保留，`--dry-run` 不轮转，`--max-age 0` ≡ `--fresh`）。平台：`android`（`adb input tap`）/ `macos`（`click.sh`，**实验**：`AXFrame` 形态未真机实测）；`ios` ⇒ rc=3 指引 `maestro/tap.sh`，`ios-device` ⇒ rc=3 指引 `appium/driver.py find-click`，`windows` ⇒ rc=3。疑似离屏（负坐标/越界）也打 ⚠️。退出码：`0` 点击完成 / `1` 未命中或 `--index` 越界 / `2` 用法错 / `3` 平台不支持 / `4` 语义树为空 / `5` 快照失败 / `6` 无可用坐标 / `7` 点击派发失败。⚠️ **rc=0 仅表示指令已送达**（`adb input tap` 无回执），是否响应必须另用 `assert_page.sh` 判 |
+
+> 耗时口径：`see_pro` + Android 真机 R38N405KJYB + iOS 模拟器 iPhone 17e，每项 3 次取中位，已热机（不含首次 JVM/驱动冷启动）。明细见 `docs/test/20261029-assert-timing.md`。
+> ⚠️ iOS 模拟器路径**明显慢于 Android**（Maestro 为 JVM 进程，单次固定开销十几秒）：≥3 条断言优先 `maestro/assert_batch.sh`（一次 flow 摊薄），只 1–2 条且需子串/数量断言时用 `assert_page.sh`。
+
+> 断言文件示例（`docs/test/` 下随任务生成）：
+> ```
+> has 我的设备
+> has-not 加载中
+> count 在线 3
+> ```
+
 ## 产物解析（多 flavor/ABI/mode 通用）
 
 - `build.sh` 参数透传给 `flutter build`（如 `build.sh --flavor dev --split-per-abi`）；**未显式指定 `--release`/`--profile` 时一律补 `--debug`**（`flutter build apk` 的内置缺省是 release，不补会静默变 release 构建）；无参时用默认 `--debug`，若 `.debug.env` 配了 `ANDROID_FLAVOR`/`IOS_SCHEME` 则自动加 `--flavor`。
@@ -86,18 +129,19 @@ metadata:
 
 ## 平台路由
 
-| 目标平台 | 脚本目录 | 能力 |
-|---|---|---|
-| Android 真机/模拟器 | `<S>/scripts/android/` | ★完整：构建/启动/日志/截图/UI 点击滑动（**Flutter 与原生工程均可用**；原生工程无 `build.sh`，见「执行约定」能力表） |
-| Android/iOS 模拟器 语义 UI | `<S>/scripts/maestro/` | ★无障碍语义定位点击/断言（跨端同 YAML，无需坐标）——**限 Flutter 工程**（原生工程走 `ui.sh`/`tap.sh`） |
-| iOS 模拟器 | `<S>/scripts/ios/` | 构建/启动/日志/截图（UI 操作走 Maestro，见下） |
-| iOS 真机 | `<S>/scripts/ios/`（命令加 `--device`） | 构建（`build.sh --device`）/安装启动（`devicectl`）/日志（`idevicesyslog --syslog-relay`）/截图（`devicectl capture`）；等价设 `IOS_TARGET=device` |
-| iOS 真机 语义 UI | `<S>/scripts/appium/` | 语义 UI（xcuitest；需 Apple 签名/TeamID，见下）——**限 Flutter 工程** |
-| macOS desktop | `<S>/scripts/macos/` | 构建/启动/日志/截图/智能点击（Vision）+ Appium mac2（实验） |
-| Windows desktop | `<S>/scripts/windows/` | 构建/启动/日志/截图（需在 Windows 机执行） |
+| 目标平台 | 脚本目录 | 结构化快照 | 能力 |
+|---|---|---|---|
+| Android 真机/模拟器 | `<S>/scripts/android/` | ✅ `snapshot.sh` | ★完整：构建/启动/日志/截图/UI 点击滑动（**Flutter 与原生工程均可用**；原生工程无 `build.sh`，见「执行约定」能力表） |
+| Android/iOS 模拟器 语义 UI | `<S>/scripts/maestro/` | —（`assert_batch.sh` 批量断言） | ★无障碍语义定位点击/断言（跨端同 YAML，无需坐标）——**限 Flutter 工程**（原生工程走 `ui.sh`/`tap.sh`） |
+| iOS 模拟器 | `<S>/scripts/ios/` | ✅（`maestro hierarchy`） | 构建/启动/日志/截图（UI 操作走 Maestro，见下） |
+| iOS 真机 | `<S>/scripts/ios/`（命令加 `--device`） | ✅（需 profile/release 包） | 构建（`build.sh --device`）/安装启动（`devicectl`）/日志（`idevicesyslog --syslog-relay`）/截图（`devicectl capture`）；等价设 `IOS_TARGET=device` |
+| iOS 真机 语义 UI | `<S>/scripts/appium/` | ✅（Appium page source） | 语义 UI（xcuitest；需 Apple 签名/TeamID，见下）——**限 Flutter 工程** |
+| macOS desktop | `<S>/scripts/macos/` | ⚠️ 实验（Appium mac2） | 构建/启动/日志/截图/智能点击（Vision）+ Appium mac2（实验）；坐标点击可用 `tap_snapshot.sh --platform macos`（**实验**：`AXFrame` 形态未真机实测） |
+| Windows desktop | `<S>/scripts/windows/` | ❌ 退回截图 | 构建/启动/日志/截图（需在 Windows 机执行） |
 
 单元测试与平台无关：`bash <S>/scripts/test.sh [路径]`。
-脚本层回归（不需真机）：`bash <S>/scripts/test_common.sh`（.debug.env 解析 + Android 非 Flutter 支持）、`bash <S>/scripts/test_bg.sh`（bg.sh）。
+脚本层回归**统一入口**（不需真机）：`bash <S>/scripts/test_all.sh`（rc `0` 全过 / `1` 有失败 / `2` 用法错）。
+默认串联三项：`test_common.sh`（.debug.env 解析 + Android 非 Flutter 支持）、`test_bg.sh -f 静态`（语法 + 多字节隐患）、`test_snapshot.sh`（快照解析 + 断言 + 点击选点/缓存 + `--diff` 变化判定，213 项离线用例）；加 `--full` 额外跑 `test_bg.sh` 全量行为用例（较慢）。
 
 ## 长任务后台模式（bg.sh）
 
@@ -181,7 +225,7 @@ bash <S>/scripts/test_bg.sh -f clamp # 只跑某组
 | `logs.sh [行数] [关键词]` | logcat 按 PID 抓取 + 异常摘要，默认 200 行 |
 | `logwatch.sh <签名> [超时秒] [间隔秒]` | **等**指定日志签名出现（动态跟随 PID，App 重启不僵死）。超时秒 ≤100（更长等待用 `bg.sh` 包装本脚本）；退出码：命中 `0` / 超时未命中 `1` / 用法错 `2` / 环境问题 `3`（无设备、非项目根、App 全程未启动） |
 | `logclear.sh` | 清空 logcat 缓冲（复现前用） |
-| `shot.sh` | 截图到 build/debug/screen.png（用 Read 查看） |
+| `shot.sh` | 截图到 build/debug/screen.png（默认**只报路径**；确需 `Read` 须按「页面观测阶梯」L2 白名单写明理由） |
 | `pull.sh <设备侧路径> [本地名]` | 把设备上的文件拉到 build/debug/（自带 `mkdir -p` ⇒ **subagent 档没有 `mkdir` 权限时的落点载体**） |
 | `ui.sh` | uiautomator 元素清单（**Flutter 未暴露语义树**时为空，属正常；但空清单也可能是解析失败 ⇒ 拿 `共 N 个可点击节点` 与 `count` 交叉核对） |
 | `tap.sh x y` 或 `--text 关键词` | 点击；危险按钮必须先 shot 确认页面。关键词为**字面包含（忽略大小写）、非正则**（故 `[`/`.`/`\|` 等按普通字符处理）。`--text` 三失败态**均为 `rc=1`**、靠消息区分：`❌ 无法获取 UI（ui.sh rc=N）`＋ui.sh 输出末 5 行（dump 级失败）／`❌ 页面无可点击节点（ui.sh rc=0 / TSV 0 行）`＋透传 `共 N 个可点击节点`（N>0 ⇒ 有节点但被 text/desc 过滤）／`❌ 未找到…`＋`💡 可用元素` 候选清单。另：label 本身含 `|` 时**显示**会被截断（`cut -d'|' -f1`；坐标仍取末两列、不受影响）—— 现状特征化，组 15.25–15.27 钉死（15.26 直断坐标仍取末两列） |
@@ -219,7 +263,7 @@ bash <S>/scripts/test_bg.sh -f clamp # 只跑某组
 ### Android UI 复现循环
 ```
 run.sh → settle.sh → (maestro/tap.sh "目标按钮" | findtap.sh "目标")
-→ settle.sh → maestro/assert.sh "成功页面" / shot.sh 确认
+→ settle.sh → maestro/assert.sh "成功页面"（失败先 `snapshot.sh`，exit 4 才 `shot.sh`）
 → logclear.sh → 触发目标操作 → logs.sh 分析
 → 修复后：build.sh → run.sh → 重走同一序列 → logs.sh 验证
 ```
@@ -227,18 +271,20 @@ run.sh → settle.sh → (maestro/tap.sh "目标按钮" | findtap.sh "目标")
 **等日志出现时用 `logwatch.sh <签名> <超时>`，不要自己拼 `adb logcat --pid=$PID` 轮询**（写死 PID 在 App 重启后会僵死成孤儿进程）。判据签名必须先在源码 `grep` 确认真实存在，勿用方法名猜测。
 **UI 操作优先级**（效率从高到低）：
 1. **Maestro**（`maestro/tap.sh` / `assert.sh`）— 语义定位，无需坐标、无需截图，首选
-2. `ui.sh` 命中 → `tap.sh --text 关键词` / `tap.sh x y`；**目标不在当前屏**时用 `findtap.sh 关键词`（自动滚动查找+点击，省掉手工「滑一次 dump 一次」）
-3. **Vision 智能命令**（语义树缺失/视觉状态判断时，见下节）
-4. 坐标点击前必须 `shot.sh` + `Read` 确认当前页（滑动/点击后先 `settle.sh`，避免抓到动画中间帧）
+2. **`tap_snapshot.sh 关键词`** — 已有 ≤60 s 快照时最快（命中缓存 <1 s），且能点 `clickable=false` 的文本节点；无缓存时 ≈ 一次 `snapshot.sh` + 点击
+3. `ui.sh` 命中 → `tap.sh --text 关键词` / `tap.sh x y`；**目标不在当前屏**时用 `findtap.sh 关键词`（自动滚动查找+点击，省掉手工「滑一次 dump 一次」）
+4. **Vision 智能命令**（语义树缺失/视觉状态判断时，见下节）
+5. 坐标点击前必须 `shot.sh` + `Read` 确认当前页（属 L2 白名单④；滑动/点击后先 `settle.sh`，避免抓到动画中间帧）
+   > 例外：**与点击同源于同一时刻语义快照**的坐标（`tap_snapshot.sh`、`snapshot.sh --center` + `tap.sh x y`）不属坐标兜底，免 `shot.sh` 前置；危险操作仍需确认（白名单⑤）。
 
-**回退**：Maestro 报错 → 先 `shot.sh` + `Read` 看真实页面，再降级到 ui.sh / Vision，不得盲点。但**必须先区分「流程失败」与「被超时中断」**：
+**回退**：Maestro 报错 → 先 `snapshot.sh` 取摘要（含指纹）定位失败层，摘要为空（exit 4）才 `shot.sh`，再降级到 ui.sh / Vision，不得盲点。但**必须先区分「流程失败」与「被超时中断」**：
 - 看 `build/debug/maestro_output.log` 停在哪一步。停在 `Tap on …` / `Assert …` 等步骤（如 `Element not found`）→ **真·流程失败**，按上面正常回退。
 - 停在启动信息 或 `Selected device … using port …` 之后无输出 → 是 Maestro 冷启动/驱动握手**被外层超时杀掉，不是流程失败**。应先 `adb -s <设备> forward --remove-all` 清理残留端口转发、改用 `bg.sh` 后台模式重试（或把超时提到 ≥180s），**不要据此降级**。
 
 ### Vision 调用路由（补充规则）
 - `ui.sh` 命中元素 → 直接 `tap.sh`，不调 Vision
 - 以下场景必须走 Vision：
-  - `ui.sh` 为空/语义树未暴露（Flutter 页面常见；**非 Flutter 页面也空 ⇒ 先怀疑解析失败**，用 `shot.sh` 交叉看真实页面）
+  - `ui.sh` 为空/语义树未暴露（Flutter 页面常见；**非 Flutter 页面也空 ⇒ 先怀疑解析失败**，先用 `snapshot.sh` 交叉核对，仍为空再 `shot.sh`）
   - 判断：白屏 / 遮挡 / 错位 / 图片缺失 / loading / empty 状态 / error 文案定位
   - 需要 OCR 读取非控件文本（toast、dialog、snackbar、红色报错）
   - 视觉回归对比（`compare` task）
@@ -332,9 +378,9 @@ build 通过 `task(subagent_type="autoDebug", prompt="...")` 把真机操作派�
 3. 不通过吞异常/大范围 try-catch 屏蔽问题；最小修改不动无关代码
 4. 同一设备同时仅运行一个 Debug Loop
 5. 日志关注点：`[模块][类名]` 前缀日志 + exception/error/fatal
-6. 危险操作（解绑/删除/付款类）点击前：Maestro 路径必须先 `shot.sh` 确认页面；macOS 路径 `smart_tap.sh` 默认已拒绝危险词（误判才加 `--allow-danger`）
+6. 危险操作（解绑/删除/付款类）点击前：优先 `snapshot.sh` + `assert_page.sh` 确认页面，语义树为空（exit 4）才 `shot.sh`；macOS 路径 `smart_tap.sh` 默认已拒绝危险词（误判才加 `--allow-danger`）
 7. `integration_test` 命令同样优先走 `bg.sh` 后台模式；确需前台直调时 timeout ≥ 180s
-8. UI 操作优先级：Maestro（Android/iOS 模拟器）> ui.sh/tap.sh/findtap.sh > Vision 智能命令；任何路径失败都要 `shot.sh` 看真实页面，禁止盲点坐标
+8. UI 操作优先级：Maestro（Android/iOS 模拟器）> tap_snapshot.sh（有 ≤60 s 快照时）> ui.sh/tap.sh/findtap.sh > Vision 智能命令；任何路径失败先用 `snapshot.sh` 取摘要定位失败层，摘要为空再 `shot.sh`，禁止盲点坐标
 9. **每条结论都要绑证据**（见下节）；没有证据一律写「未验证」，不得写「已修复」
 
 ## 证据与主张（回报口径）
@@ -347,7 +393,8 @@ build 通过 `task(subagent_type="autoDebug", prompt="...")` 把真机操作派�
 | 静态检查/单测 | `flutter analyze`、`flutter test` | 「逻辑层无回归」 |
 | 构建产物 | `build/debug/.last_*` 锁文件、APK/.app 存在 | 「产物已产出」 |
 | 运行日志 | `logs.sh` / `logwatch.sh` 命中签名 | 「该路径本次被执行」 |
-| 界面观测 | `shot.sh` / `ui.sh` / Maestro 断言通过 | 「界面呈现符合预期」 |
+| 语义摘要/断言 | `snapshot.sh` / `assert_page.sh` 通过 | 「界面呈现符合预期」 |
+| 截图 | `shot.sh`（仅视觉类/取证，默认不 `Read`） | 仅「视觉呈现」 |
 
 **主张映射（强制）**：每条结论后跟证据坐标 `证据: build/debug/<文件>:<关键词/行号>`。
 `gradlew clean` / `flutter clean` 会清掉证据 ⇒ 被清掉的主张**自动降级为「未验证」**，不要照抄上一轮结论。
