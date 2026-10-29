@@ -3,13 +3,21 @@
 #
 # 用法:
 #   ./snapshot.sh [--platform android|ios|ios-device|macos] [--max 40] [--json] [--center]
-#                 [--wait-stable] [--no-cache]
+#                 [--wait-stable] [--single-dump] [--no-cache]
 #   ./snapshot.sh --diff [--against <snapshot.json>] [--max-diff 20] [--platform P] [--no-cache]
+#   ./snapshot.sh --cache-payload <snapshot.json> [--platform P]
 #
 # 输出:
 #   默认 人读摘要（≤--max 行，text 截断 40 字符）；--center 追加第 7 列 cx,cy
 #   --json 断言/点击专用全量数据（供 assert_page.sh / tap_snapshot.sh 使用）
 #   --diff 变化清单（TAB 分隔，取代摘要输出，≤--max-diff 行 + header 计数）
+#   --single-dump 仅 Android：只 dump 一次（跳过 0.6s 等待与第二次 dump，约省一半时间）。
+#     ⚠️ Flutter 语义树懒激活时可能拿到空树（rc=4）⇒ 只供 assert_page --wait 轮询与调试用，
+#     单次观测不要默认开；与 --wait-stable 互斥（rc=2），iOS/macOS 打 ⚠️ 后忽略。
+#   --cache-payload 不 dump，只把已拿到的 --json 产物落盘（assert_page --wait 通过后调用）；
+#     只允许与 --platform 同用，其余参数一律 rc=2；平台必须显式或可自动判定（否则 rc=3，不猜）；
+#     payload 方言与平台必须自洽（uiautomator↔android、xcuitest↔ios/ios-device、maestro↔ios、mac2↔macos）。
+#     ⚠️ _meta.ts 取**落盘时刻**（非 dump 时刻）⇒ tap_snapshot 的 TTL 会略偏乐观（≈一轮轮询时长）。
 #
 # 缓存:
 #   任一**观测成功**（rc=0，含摘要/--diff 模式）写 $LOG_DIR/last_snapshot.json（含 _meta.platform/ts），
@@ -31,18 +39,21 @@ DIFF_PY="$SCRIPT_DIR/_snapshot_diff.py"
 LOG_DIR="${LOG_DIR:-build/debug}"
 
 PLATFORM=""; MAX=40; JSON=false; CENTER=false; WAIT_STABLE=false; NO_CACHE=false
-DIFF=false; AGAINST=""; MAX_DIFF=20; MAX_DIFF_SET=false
+SINGLE_DUMP=false; CACHE_PAYLOAD=""; CACHE_PAYLOAD_SET=false; MAX_SET=false
+DIFF=false; AGAINST=""; AGAINST_SET=false; MAX_DIFF=20; MAX_DIFF_SET=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --platform) [ $# -ge 2 ] || { echo "❌ --platform 缺参数值"; exit 2; }; PLATFORM="$2"; shift 2 ;;
-    --max)      [ $# -ge 2 ] || { echo "❌ --max 缺参数值"; exit 2; };      MAX="$2"; shift 2 ;;
+    --max)      [ $# -ge 2 ] || { echo "❌ --max 缺参数值"; exit 2; };      MAX="$2"; MAX_SET=true; shift 2 ;;
     --json)     JSON=true; shift ;;
     --center)   CENTER=true; shift ;;
     --wait-stable) WAIT_STABLE=true; shift ;;
+    --single-dump) SINGLE_DUMP=true; shift ;;
     --no-cache) NO_CACHE=true; shift ;;
     --diff)     DIFF=true; shift ;;
-    --against)  [ $# -ge 2 ] || { echo "❌ --against 缺参数值"; exit 2; }; AGAINST="$2"; shift 2 ;;
+    --against)  [ $# -ge 2 ] || { echo "❌ --against 缺参数值"; exit 2; }; AGAINST="$2"; AGAINST_SET=true; shift 2 ;;
     --max-diff) [ $# -ge 2 ] || { echo "❌ --max-diff 缺参数值"; exit 2; }; MAX_DIFF="$2"; MAX_DIFF_SET=true; shift 2 ;;
+    --cache-payload) [ $# -ge 2 ] || { echo "❌ --cache-payload 缺参数值"; exit 2; }; CACHE_PAYLOAD="$2"; CACHE_PAYLOAD_SET=true; shift 2 ;;
     -*) echo "❌ 未知参数: $1"; exit 2 ;;
     *)  echo "❌ 未知参数: $1"; exit 2 ;;
   esac
@@ -64,8 +75,19 @@ fi
 if [ "$DIFF" = false ] && [ "$MAX_DIFF_SET" = true ]; then
   echo "❌ --max-diff 需配合 --diff 使用"; exit 2
 fi
+if [ "$SINGLE_DUMP" = true ] && [ "$WAIT_STABLE" = true ]; then
+  echo "❌ --single-dump 与 --wait-stable 互斥（后者自身需要多次 dump）"; exit 2
+fi
+if [ "$CACHE_PAYLOAD_SET" = true ]; then
+  # 白名单：--cache-payload 只允许与 --platform 同用（其余参数会让人以为它还做了别的）
+  if [ "$JSON" = true ] || [ "$CENTER" = true ] || [ "$WAIT_STABLE" = true ] || [ "$NO_CACHE" = true ] \
+     || [ "$DIFF" = true ] || [ "$AGAINST_SET" = true ] || [ "$MAX_DIFF_SET" = true ] || [ "$SINGLE_DUMP" = true ] \
+     || [ "$MAX_SET" = true ]; then
+    echo "❌ --cache-payload 只接受 --platform（不 dump、不解析，其他参数无意义）"; exit 2
+  fi
+fi
 
-if [ -z "$PLATFORM" ]; then
+if [ -z "$PLATFORM" ] && [ "$CACHE_PAYLOAD_SET" = false ]; then
   # shellcheck source=/dev/null
   source "$SCRIPT_DIR/_platform_detect.sh"
   PLATFORM=$(detect_platform || true)
@@ -182,8 +204,49 @@ json.dump(payload, open(sys.argv[2], "w", encoding="utf-8"), ensure_ascii=False)
   fi
 }
 
+# --cache-payload：不 dump，把已拿到的 --json 产物直接落盘（assert_page --wait 通过后调用）
+if [ "$CACHE_PAYLOAD_SET" = true ]; then
+  if [ ! -f "$CACHE_PAYLOAD" ]; then
+    echo "❌ --cache-payload 指向的文件不存在: $CACHE_PAYLOAD" >&2; exit 2
+  fi
+  set +e
+  python3 "$DIFF_PY" --check-payload "$CACHE_PAYLOAD" >/dev/null 2>&1
+  chk_rc=$?
+  set -e
+  if [ "$chk_rc" -ne 0 ]; then
+    echo "❌ --cache-payload 只接受 snapshot.sh --json 产物（不可解析: ${CACHE_PAYLOAD}）" >&2; exit 2
+  fi
+  if [ -z "$PLATFORM" ]; then
+    # shellcheck source=/dev/null
+    source "$SCRIPT_DIR/_platform_detect.sh"
+    PLATFORM=$(detect_platform || true)
+  fi
+  if [ -z "$PLATFORM" ]; then
+    echo "❌ --cache-payload 无法确定平台（请显式 --platform，避免写坏 _meta.platform 导致基线链断裂）" >&2; exit 3
+  fi
+  case "$PLATFORM" in
+    android|ios|ios-device|macos) ;;
+    *) echo "❌ 不支持的平台: $PLATFORM" >&2; exit 3 ;;
+  esac
+  # payload 的方言必须与平台自洽，否则写出的 _meta.platform 会让后续 --diff 隐式基线被硬拒
+  cp_dialect=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("dialect",""))' "$CACHE_PAYLOAD" 2>/dev/null || true)
+  case "${cp_dialect}:${PLATFORM}" in
+    uiautomator:android|xcuitest:ios|xcuitest:ios-device|maestro:ios|mac2:macos|:*) ;;
+    *) echo "❌ payload 方言与 --platform 不自洽（dialect=${cp_dialect} platform=${PLATFORM}），拒绝落盘" >&2; exit 2 ;;
+  esac
+  mkdir -p "$LOG_DIR" 2>/dev/null || true
+  OUT=$(cat "$CACHE_PAYLOAD") || { echo "❌ 无法读取 --cache-payload 文件: $CACHE_PAYLOAD" >&2; exit 2; }
+  RC=0
+  write_cache
+  echo "💾 已落盘 ${LOG_DIR}/last_snapshot.json（platform=${PLATFORM}）" >&2
+  exit 0
+fi
+
 if [ "$WAIT_STABLE" = true ] && [ "$PLATFORM" != android ]; then
   echo "⚠️ --wait-stable 仅 Android 生效，当前平台忽略（iOS/macOS 快照本身为单次全量导出）" >&2
+fi
+if [ "$SINGLE_DUMP" = true ] && [ "$PLATFORM" != android ]; then
+  echo "⚠️ --single-dump 仅 Android 生效，当前平台忽略（iOS/macOS 快照本身为单次全量导出）" >&2
 fi
 
 # 平台预检（SNAPSHOT_INPUT 测试钩子同样遵守：平台契约不因钩子放宽）
@@ -245,6 +308,10 @@ case "$PLATFORM" in
         n=$((n + 1))
         [ "$n" -lt 5 ] && sleep 0.6
       done
+    elif [ "$SINGLE_DUMP" = true ]; then
+      # 单 dump：跳过 0.6s 等待与第二次 dump（约省一半时间）。
+      # Flutter 语义树懒激活时可能拿到空树（rc=4）⇒ 只给 assert_page --wait 轮询与调试用。
+      dump_with_retry || exit 1
     else
       # 默认双 dump：Flutter 语义树由无障碍客户端触发后懒构建，首次常空
       dump_with_retry || exit 1

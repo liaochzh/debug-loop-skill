@@ -9,10 +9,20 @@
 
     # 2) 计算并输出 diff（人读 TSV，TAB 分隔）
     python3 _snapshot_diff.py --baseline <json> --current <json> [--max-diff 20]
-                              [--baseline-kind last|prev|file] [--baseline-age 12]
+                              [--baseline-kind last|prev|file] [--baseline-age 12] [--strict]
+
+    # 3) 只校验 payload 是否可用（assert_page 的 --cache-payload 前置）
+    python3 _snapshot_diff.py --check-payload <json>
 
 --pick-baseline 输出（单行）:
     `<path>\\t<kind>\\t<age>\\t<stale>`，kind=file|last|prev，age 为整数秒或 `-`，stale=0|1
+
+--strict（仅 --baseline/--current 路径）:
+    校验基线与当前快照的 dialect / platform 一致；不一致 ⇒ stderr 一行 ⚠️ + rc=1，**不输出 diff**。
+    用于「自动挑选的基线」（assert_page 的 prev）：错误基线会产出「以 rc=0 交付的假 diff」。
+    --baseline-age 省略且 --baseline-kind ∈ {last,prev} 时，自动用基线自身 `_meta.ts` 算 age。
+
+--check-payload 输出: 无；rc=0 可解析 / 1 不可解析 / 2 读不到
 
 diff 输出:
     第 1 行 header（`# diff baseline=… fp=…→… nodes=M: +a -b ~c (text t / pos p / clickable k)`），
@@ -35,7 +45,8 @@ diff 输出:
 变化分类（配对成功的一对，只报一类）: text > pos（任一坐标差 > 2px）> clickable
 
 退出码:
-    0 成功 / 1 无可用基线或基线不可解析 / 2 用法错（--against 缺文件、--max-diff 非正整数）
+    0 成功 / 1 无可用基线、基线不可解析、`--strict` 校验不一致、`--check-payload` 不可解析
+    2 用法错（--against 缺文件、--max-diff 非正整数、--check-payload 文件不存在）
 """
 
 import argparse
@@ -320,6 +331,16 @@ def run_diff(args):
         print("❌ 当前快照不可解析: %s" % args.current, file=sys.stderr)
         return 1
 
+    if args.strict:
+        platform = args.platform or meta_of(current).get("platform") or ""
+        reasons = mismatch_reasons(baseline, current.get("dialect") or "", platform)
+        if reasons:
+            print("⚠️ 基线与当前快照不一致（%s），已跳过 diff" % "、".join(reasons), file=sys.stderr)
+            return 1
+
+    if args.baseline_age is None and args.baseline_kind in ("last", "prev"):
+        args.baseline_age = age_of(baseline)
+
     dialect = current.get("dialect") or baseline.get("dialect") or "uiautomator"
     old, new = baseline["nodes"], current["nodes"]
     entries = build_entries(old, new, dialect)
@@ -359,7 +380,19 @@ def main():
     parser.add_argument("--max-diff", type=int, default=DEFAULT_MAX_DIFF)
     parser.add_argument("--baseline-kind", default="last", choices=["last", "prev", "file"])
     parser.add_argument("--baseline-age", default="")
+    parser.add_argument("--strict", action="store_true")
+    parser.add_argument("--check-payload", default="")
     args = parser.parse_args()
+
+    if args.check_payload:
+        if not os.path.isfile(args.check_payload) or not os.access(args.check_payload, os.R_OK):
+            print("❌ payload 文件不存在: %s" % args.check_payload, file=sys.stderr)
+            return 2
+        if load_payload(args.check_payload) is None:
+            print("❌ payload 不可解析（需 snapshot.sh 的 --json 产物，含 nodes/raw_nodes/dialect/fingerprint）: %s"
+                  % args.check_payload, file=sys.stderr)
+            return 1
+        return 0
 
     if args.pick_baseline:
         return pick_baseline(args)
