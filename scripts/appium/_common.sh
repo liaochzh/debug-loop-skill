@@ -94,6 +94,35 @@ resolve_ios_device() {
     | grep -Eo '\([0-9A-Fa-f-]{25,}\)' | tr -d '()' | head -1 || true
 }
 
+# 已启动的 iOS 模拟器 UDID（优先 IOS_SIM_UDID，否则取 booted 第一个）
+resolve_ios_sim() {
+  if [ -n "${IOS_SIM_UDID:-}" ]; then
+    echo "$IOS_SIM_UDID"
+    return 0
+  fi
+  xcrun simctl list devices booted 2>/dev/null \
+    | grep -E '^[[:space:]]*(iPhone|iPad)' \
+    | grep -Eo '\([0-9A-Fa-f-]{36}\)' | tr -d '()' | head -1 || true
+}
+
+# 写 iOS 模拟器 xcuitest caps 到 $1
+write_caps_ios_sim() {
+  local out="$1" bid="${2:-}" udid="${3:-}"
+  [ -n "$bid" ] || bid="${IOS_BUNDLE_ID:-}"
+  [ -n "$udid" ] || udid=$(resolve_ios_sim || true)
+  if [ -z "$bid" ]; then echo "❌ 缺 BundleID（.debug.env IOS_BUNDLE_ID 或 --app-id）"; exit 1; fi
+  if [ -z "$udid" ]; then echo "❌ 未检测到已启动的 iOS 模拟器（xcrun simctl list devices booted）"; exit 1; fi
+  python3 - "$out" "$bid" "$udid" <<'PY'
+import json, sys
+out, bid, udid = sys.argv[1], sys.argv[2], sys.argv[3]
+caps = {"platformName": "iOS", "appium:automationName": "XCUITest",
+        "appium:udid": udid, "appium:bundleId": bid,
+        "appium:noReset": True, "appium:useNewWDA": False}
+json.dump(caps, open(out, "w", encoding="utf-8"), ensure_ascii=False)
+PY
+  echo "🧩 caps(iOS 模拟器/xcuitest): bundleId=$bid udid=$udid"
+}
+
 # 写 macOS mac2 caps 到 $1
 write_caps_macos() {
   local out="$1" bid="${2:-}"

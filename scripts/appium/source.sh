@@ -1,7 +1,7 @@
 #!/bin/bash
 # source.sh — 导出当前页面 page source（元素结构；排查元素可否寻址的关键手段）
 #
-# 用法: ./source.sh --platform macos|ios-device [--app-id <id>] [--udid <udid>] [--team-id <TeamID>] [--out <path>]
+# 用法: ./source.sh --platform macos|ios|ios-device [--app-id <id>] [--udid <udid>] [--team-id <TeamID>] [--out <path>]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,12 +29,13 @@ if [ -n "$WAIT" ]; then
   esac
 fi
 
-[ -n "$PLATFORM" ] || { echo "❌ 用法: ./source.sh --platform macos|ios-device [...]"; exit 1; }
+[ -n "$PLATFORM" ] || { echo "❌ 用法: ./source.sh --platform macos|ios|ios-device [...]"; exit 1; }
 
 case "$PLATFORM" in
   macos)     ;;
+  ios)       ;;
   ios-device) [ -n "$TEAM_ID" ] && export IOS_TEAM_ID="$TEAM_ID";;
-  *) echo "❌ --platform 仅支持 macos|ios-device"; exit 1 ;;
+  *) echo "❌ --platform 仅支持 macos|ios|ios-device"; exit 1 ;;
 esac
 
 require_appium
@@ -43,6 +44,7 @@ ensure_appium_server
 CAPS="$LOG_DIR/.appium_caps.json"
 case "$PLATFORM" in
   macos)      write_caps_macos "$CAPS" "$APP_ID" ;;
+  ios)        write_caps_ios_sim "$CAPS" "$APP_ID" "$UDID" ;;
   ios-device) write_caps_ios_device "$CAPS" "$APP_ID" "$UDID" ;;
 esac
 
