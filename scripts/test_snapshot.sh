@@ -846,6 +846,251 @@ expect_eq "空语义树未命中 rc=1" "1" "$?"
 expect_contains "空语义树提示语义树为空" "语义树为空" "$out"
 case "$out" in *"目标可能在屏外"*) bad "空语义树不应推滚动查找" ;; *) ok "空语义树不推滚动查找" ;; esac
 
+# ---------- _snapshot_diff.py：--strict / 自动 age / --check-payload ----------
+cat > "$TMP/dn_cur.json" <<'JSON'
+{"dialect":"uiautomator","raw_nodes":1,"fingerprint":"dddd","nodes":[
+ {"type":"T","text":"Home","id":"","bounds":"[0,0][10,10]","clickable":false}]}
+JSON
+write_meta_payload "$TMP/dn_ok.json" uiautomator android "$(date +%s)"
+write_meta_payload "$TMP/dn_ios.json" uiautomator ios "$(date +%s)"
+write_meta_payload "$TMP/dn_maestro.json" maestro android "$(date +%s)"
+
+python3 "$DIFF" --baseline "$TMP/dn_ok.json" --current "$TMP/dn_cur.json" --baseline-kind prev --strict --platform android > "$TMP/dn_out.txt" 2>/dev/null
+expect_eq "strict 一致 rc=0" "0" "$?"
+expect_contains "strict 一致输出 header" "# diff" "$(cat "$TMP/dn_out.txt")"
+expect_contains "自动 age（kind=prev 且未给 --baseline-age）" "baseline=prev(age=" "$(head -1 "$TMP/dn_out.txt")"
+
+python3 "$DIFF" --baseline "$TMP/dn_ios.json" --current "$TMP/dn_cur.json" --baseline-kind prev --strict --platform android > "$TMP/dn_out.txt" 2>"$TMP/dn_err.txt"
+expect_eq "strict platform 不符 rc=1" "1" "$?"
+expect_eq "strict 不符不输出 diff" "0" "$(wc -c < "$TMP/dn_out.txt" | tr -d ' ')"
+expect_contains "strict 不符提示原因" "platform ios≠android" "$(cat "$TMP/dn_err.txt")"
+
+python3 "$DIFF" --baseline "$TMP/dn_maestro.json" --current "$TMP/dn_cur.json" --baseline-kind prev --strict > /dev/null 2>&1
+expect_eq "strict dialect 不符 rc=1" "1" "$?"
+
+python3 "$DIFF" --check-payload "$TMP/dn_cur.json" > /dev/null 2>&1
+expect_eq "--check-payload 可用 rc=0" "0" "$?"
+python3 "$DIFF" --check-payload "$TMP/d1.xml" > /dev/null 2>&1
+expect_eq "--check-payload 非 --json 产物 rc=1" "1" "$?"
+python3 "$DIFF" --check-payload "$TMP/nope.json" > /dev/null 2>&1
+expect_eq "--check-payload 文件不存在 rc=2" "2" "$?"
+
+# ---------- snapshot.sh：--single-dump 参数面 ----------
+LOG_DIR="$DIFF_DIR" SNAPSHOT_INPUT="$TMP/d1.xml" bash "$SNAP" --platform ios --single-dump --json > /dev/null 2>"$TMP/sd_err.txt"
+expect_eq "--single-dump 在 ios 不影响 rc" "0" "$?"
+expect_contains "--single-dump 在 ios 打 ⚠️" "仅 Android 生效" "$(cat "$TMP/sd_err.txt")"
+LOG_DIR="$DIFF_DIR" SNAPSHOT_INPUT="$TMP/d1.xml" bash "$SNAP" --platform android --single-dump --wait-stable > /dev/null 2>&1
+expect_eq "--single-dump × --wait-stable rc=2" "2" "$?"
+LOG_DIR="$DIFF_DIR" SNAPSHOT_INPUT="$TMP/d1.xml" bash "$SNAP" --platform android --single-dump --json > /dev/null 2>&1
+expect_eq "SNAPSHOT_INPUT 下 --single-dump 被忽略（rc=0）" "0" "$?"
+snap "$TMP/d1.xml" > /dev/null 2>&1
+snap "$TMP/d1.xml" --single-dump --diff > /dev/null 2>&1
+expect_eq "--single-dump × --diff 允许" "0" "$?"
+
+# ---------- snapshot.sh：--cache-payload ----------
+CP_DIR="$TMP/cp_log"; mkdir -p "$CP_DIR"
+rm -f "$CP_DIR/last_snapshot.json" "$CP_DIR/prev_snapshot.json"
+LOG_DIR="$CP_DIR" SNAPSHOT_INPUT="$TMP/d1.xml" bash "$SNAP" --platform android --json > /dev/null 2>&1
+cp "$CP_DIR/last_snapshot.json" "$TMP/cp_first.json"
+out=$(LOG_DIR="$CP_DIR" bash "$SNAP" --cache-payload "$TMP/dn_cur.json" --platform android 2>&1)
+expect_eq "--cache-payload rc=0" "0" "$?"
+expect_contains "--cache-payload 落盘提示" "已落盘" "$out"
+expect_eq "--cache-payload 写入 _meta.platform" "android" "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["_meta"]["platform"])' "$CP_DIR/last_snapshot.json")"
+expect_eq "--cache-payload 新载荷成为 last" "dddd" "$(fp_of "$CP_DIR/last_snapshot.json")"
+expect_eq "--cache-payload 旧 last 轮转为 prev" "$(fp_of "$TMP/cp_first.json")" "$(fp_of "$CP_DIR/prev_snapshot.json")"
+LOG_DIR="$CP_DIR" bash "$SNAP" --cache-payload "$TMP/d1.xml" > /dev/null 2>&1
+expect_eq "--cache-payload 非 --json 产物 rc=2" "2" "$?"
+LOG_DIR="$CP_DIR" bash "$SNAP" --cache-payload "$TMP/nope.json" > /dev/null 2>&1
+expect_eq "--cache-payload 文件不存在 rc=2" "2" "$?"
+LOG_DIR="$CP_DIR" bash "$SNAP" --cache-payload "$TMP/dn_cur.json" --json > /dev/null 2>&1
+expect_eq "--cache-payload + --json 互斥 rc=2" "2" "$?"
+LOG_DIR="$CP_DIR" bash "$SNAP" --cache-payload "$TMP/dn_cur.json" --no-cache > /dev/null 2>&1
+expect_eq "--cache-payload + --no-cache 互斥 rc=2" "2" "$?"
+LOG_DIR="$CP_DIR" bash "$SNAP" --cache-payload "$TMP/dn_cur.json" --diff > /dev/null 2>&1
+expect_eq "--cache-payload + --diff 互斥 rc=2" "2" "$?"
+LOG_DIR="$CP_DIR" bash "$SNAP" --cache-payload "$TMP/dn_cur.json" --against "" > /dev/null 2>&1
+expect_eq "--cache-payload + --against 空值 互斥 rc=2" "2" "$?"
+LOG_DIR="$CP_DIR" bash "$SNAP" --cache-payload "$TMP/dn_cur.json" --max 5 > /dev/null 2>&1
+expect_eq "--cache-payload + --max 互斥 rc=2" "2" "$?"
+LOG_DIR="$CP_DIR" bash "$SNAP" --cache-payload "" > /dev/null 2>&1
+expect_eq "--cache-payload 空值 rc=2" "2" "$?"
+LOG_DIR="$CP_DIR" bash "$SNAP" --cache-payload "$TMP/tg_ios.json" --platform android > /dev/null 2>&1
+expect_eq "--cache-payload 方言与平台不自洽 rc=2" "2" "$?"
+LOG_DIR="$CP_DIR" bash "$SNAP" --cache-payload "$TMP/tg_ios.json" --platform ios > /dev/null 2>&1
+expect_eq "--cache-payload maestro↔ios 允许" "0" "$?"
+MINBIN="$TMP/minbin"; mkdir -p "$MINBIN"
+for tool in python3 cat mkdir mv rm dirname; do
+  src=$(command -v "$tool" 2>/dev/null) && ln -sf "$src" "$MINBIN/$tool"
+done
+env PATH="$MINBIN" LOG_DIR="$CP_DIR" /bin/bash "$SNAP" --cache-payload "$TMP/dn_cur.json" > /dev/null 2>&1
+expect_eq "--cache-payload 平台不可判定 rc=3" "3" "$?"
+
+# ---------- assert_page.sh：H1 失败附 diff ----------
+AP="$SCRIPT_DIR/assert_page.sh"
+H1_DIR="$TMP/ap_log"; mkdir -p "$H1_DIR"
+H1_LAST="$H1_DIR/last_snapshot.json"; H1_PREV="$H1_DIR/prev_snapshot.json"
+ap() { LOG_DIR="$H1_DIR" SNAPSHOT_INPUT="$1" bash "$AP" --platform android "${@:2}"; }
+
+ap "$TMP/d1.xml" --has "Loading" > /dev/null 2>&1
+expect_eq "assert_page 通过 rc=0" "0" "$?"
+out=$(ap "$TMP/d2.xml" --has "Loading" 2>"$TMP/ap_err.txt")
+expect_eq "断言失败 rc=1" "1" "$?"
+expect_contains "失败 stdout 仍是 FAIL 行" "❌ 1/1 FAIL" "$out"
+case "$out" in *"与上一份快照的差异"*) bad "diff 不应写 stdout" ;; *) ok "diff 不污染 stdout" ;; esac
+err=$(cat "$TMP/ap_err.txt")
+expect_contains "stderr 含 diff 标题" "与上一份快照的差异" "$err"
+expect_contains "stderr 基线为 prev 且带 age" "baseline=prev(age=" "$err"
+if printf '%s\n' "$err" | grep -q $'^-\t.*Loading'; then ok "stderr 含被删节点行（-…Loading）"; else bad "stderr 缺少被删节点行（-…Loading）"; fi
+expect_contains "stderr 含新增节点（Add）" "Add" "$err"
+
+ap "$TMP/d2.xml" --has "Loading" --no-diff > /dev/null 2>"$TMP/ap_err.txt"
+expect_eq "--no-diff 仍 rc=1" "1" "$?"
+case "$(cat "$TMP/ap_err.txt")" in *"与上一份快照的差异"*) bad "--no-diff 仍输出 diff" ;; *) ok "--no-diff 不输出 diff" ;; esac
+
+rm -f "$H1_LAST" "$H1_PREV"
+ap "$TMP/d2.xml" --has "Loading" > /dev/null 2>"$TMP/ap_err.txt"
+expect_eq "无 prev 时 rc=1" "1" "$?"
+case "$(cat "$TMP/ap_err.txt")" in *"与上一份快照的差异"*) bad "无 prev 不应输出 diff" ;; *) ok "无 prev 静默跳过 diff" ;; esac
+
+rm -f "$H1_LAST"
+write_meta_payload "$H1_PREV" uiautomator ios "$(date +%s)"
+ap "$TMP/d2.xml" --has "Loading" > /dev/null 2>"$TMP/ap_err.txt"
+case "$(cat "$TMP/ap_err.txt")" in *"与上一份快照的差异"*) bad "platform 不符不应输出 diff" ;; *) ok "prev platform 不符时静默跳过" ;; esac
+
+rm -f "$H1_LAST"
+write_meta_payload "$H1_PREV" maestro android "$(date +%s)"
+ap "$TMP/d2.xml" --has "Loading" > /dev/null 2>"$TMP/ap_err.txt"
+case "$(cat "$TMP/ap_err.txt")" in *"与上一份快照的差异"*) bad "dialect 不符不应输出 diff" ;; *) ok "prev dialect 不符时静默跳过" ;; esac
+
+rm -f "$H1_LAST"
+write_meta_payload "$H1_PREV" uiautomator android "$(( $(date +%s) - 600 ))"
+ap "$TMP/d2.xml" --has "Loading" > /dev/null 2>"$TMP/ap_err.txt"
+expect_contains "prev 过旧仍输出并标 stale" "stale" "$(cat "$TMP/ap_err.txt")"
+
+cat > "$TMP/empty.xml" <<'XML'
+<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node class="android.widget.FrameLayout" text="" resource-id="" clickable="false" bounds="[0,0][100,100]"/>
+</hierarchy>
+XML
+ap "$TMP/d1.xml" > /dev/null 2>&1
+ap "$TMP/empty.xml" --has "Loading" > /dev/null 2>"$TMP/ap_err.txt"
+expect_eq "空树 rc=4" "4" "$?"
+case "$(cat "$TMP/ap_err.txt")" in *"与上一份快照的差异"*) bad "rc=4 不应附 diff（会误导为全删）" ;; *) ok "rc=4 不附 diff" ;; esac
+
+printf '<hierarchy><node' > "$TMP/broken.xml"
+ap "$TMP/broken.xml" --has "Loading" > /dev/null 2>"$TMP/ap_err.txt"
+expect_eq "解析失败 rc=5" "5" "$?"
+case "$(cat "$TMP/ap_err.txt")" in *"与上一份快照的差异"*) bad "rc=5 不应附 diff" ;; *) ok "rc=5 不附 diff" ;; esac
+
+# ios-device：方言反推为 ios，不得覆盖权威平台（否则 --strict 恒不符 ⇒ H1 静默失效）
+IOSD_DIR="$TMP/iosd_log"; mkdir -p "$IOSD_DIR"
+cat > "$TMP/xcui2.xml" <<'XML'
+<AppiumAUT>
+  <XCUIElementTypeApplication name="Demo" label="Demo" x="0" y="0" width="390" height="844">
+    <XCUIElementTypeStaticText name="title" label="设置页" value="" x="16" y="50" width="200" height="20"/>
+  </XCUIElementTypeApplication>
+</AppiumAUT>
+XML
+LOG_DIR="$IOSD_DIR" SNAPSHOT_INPUT="$TMP/xcui.xml" bash "$SNAP" --platform ios-device --json > /dev/null 2>&1
+LOG_DIR="$IOSD_DIR" SNAPSHOT_INPUT="$TMP/xcui2.xml" bash "$AP" --platform ios-device --has "订单列表" > /dev/null 2>"$TMP/iosd_err.txt"
+expect_eq "ios-device 断言失败 rc=1" "1" "$?"
+expect_contains "ios-device 仍能附 diff（平台不被方言覆盖）" "与上一份快照的差异" "$(cat "$TMP/iosd_err.txt")"
+
+# ---------- assert_page.sh：--wait 轮询（SNAPSHOT_BIN 桩序列） ----------
+H2_DIR="$TMP/h2_log"; SEQ_DIR="$TMP/h2_seq"; mkdir -p "$H2_DIR" "$SEQ_DIR"
+python3 "$PARSE" --input "$TMP/d1.xml" --json > "$SEQ_DIR/pass.json"
+python3 "$PARSE" --input "$TMP/d2.xml" --json > "$SEQ_DIR/fail.json"
+cat > "$TMP/stub_seq.sh" <<'SH'
+idx=0
+[ -f "$SEQ_DIR/count" ] && idx=$(cat "$SEQ_DIR/count")
+printf '%s\n' $((idx + 1)) > "$SEQ_DIR/count"
+IFS=',' read -ra parts <<< "$SEQ"
+n=${#parts[@]}
+[ "$idx" -ge "$n" ] && idx=$((n - 1))
+case "${parts[$idx]}" in
+  pass) cat "$SEQ_DIR/pass.json"; exit 0 ;;
+  fail) cat "$SEQ_DIR/fail.json"; exit 0 ;;
+  4)    printf '%s' '{"dialect":"uiautomator","raw_nodes":1,"fingerprint":"e0","nodes":[]}'; exit 4 ;;
+  3)    exit 3 ;;
+  *)    exit 1 ;;
+esac
+SH
+h2() {  # h2 <序列> [额外参数...]
+  rm -f "$SEQ_DIR/count"
+  SEQ="$1" SEQ_DIR="$SEQ_DIR" LOG_DIR="$H2_DIR" SNAPSHOT_BIN="$TMP/stub_seq.sh" \
+    bash "$AP" --platform android --has "Loading" "${@:2}"
+}
+
+rm -f "$H2_DIR/last_snapshot.json" "$H2_DIR/prev_snapshot.json"
+out=$(h2 "fail,fail,pass" --wait 10 2>/dev/null)
+expect_eq "H2 第 3 次通过 rc=0" "0" "$?"
+expect_contains "H2 通过输出轮询次数" "第 3 次" "$out"
+expect_eq "H2 通过后 last = 最后一次 payload" "$(fp_of "$SEQ_DIR/pass.json")" "$(fp_of "$H2_DIR/last_snapshot.json")"
+expect_eq "H2 通过后 _meta.platform" "android" "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["_meta"]["platform"])' "$H2_DIR/last_snapshot.json")"
+
+rm -f "$H2_DIR/last_snapshot.json"
+out=$(h2 "fail" --wait 2 --interval 0.5 2>&1)
+expect_eq "H2 超时 rc=1" "1" "$?"
+expect_contains "H2 超时输出最后一次 FAIL" "❌ 1/1 FAIL" "$out"
+expect_contains "H2 超时输出轮询计数" "已轮询" "$out"
+n=$(cat "$SEQ_DIR/count" 2>/dev/null || echo 0)
+if [ "${n:-0}" -ge 3 ]; then ok "H2 超时轮询次数 ≥3（实际 ${n}）"; else bad "H2 超时轮询次数不足（实际 ${n:-?}）"; fi
+if [ -f "$H2_DIR/last_snapshot.json" ]; then bad "H2 超时不应落盘"; else ok "H2 超时不落盘"; fi
+
+out=$(h2 "4,4,pass" --wait 10 2>/dev/null)
+expect_eq "H2 空树后通过 rc=0" "0" "$?"
+expect_contains "H2 空树后第 3 次通过" "第 3 次" "$out"
+h2 "4" --wait 1 --interval 0.5 > /dev/null 2>&1
+expect_eq "H2 恒空树 rc=4" "4" "$?"
+
+out=$(h2 "1,4,1,pass" --wait 10 2>/dev/null)
+expect_eq "H2 混合序列 1,4,1,pass rc=0（rc=4 重置连败）" "0" "$?"
+h2 "1" --wait 10 > /dev/null 2>&1
+expect_eq "H2 快照连续失败 rc=5" "5" "$?"
+expect_eq "H2 连续失败 2 次即放弃" "2" "$(cat "$SEQ_DIR/count")"
+h2 "3" --wait 10 > /dev/null 2>&1
+expect_eq "H2 rc=3 速退" "3" "$?"
+expect_eq "H2 rc=3 只轮询 1 次" "1" "$(cat "$SEQ_DIR/count")"
+
+bash "$AP" --platform android --has x --wait abc > /dev/null 2>&1
+expect_eq "--wait 非整数 rc=2" "2" "$?"
+bash "$AP" --platform android --has x --wait -1 > /dev/null 2>&1
+expect_eq "--wait 负数 rc=2" "2" "$?"
+bash "$AP" --platform android --has x --interval 0 > /dev/null 2>&1
+expect_eq "--interval 0 rc=2" "2" "$?"
+
+# --wait 0 与既有行为等价（三条可观察判据）
+rm -f "$H1_DIR/last_snapshot.json" "$H1_DIR/prev_snapshot.json"
+LOG_DIR="$H1_DIR" SNAPSHOT_INPUT="$TMP/d1.xml" bash "$AP" --platform android --has "Loading" > "$TMP/w0_out.txt" 2>&1
+expect_eq "--wait 0 通过 rc=0" "0" "$?"
+expect_contains "--wait 0 通过首行形状" "✅ 1/1 PASS platform=android" "$(head -1 "$TMP/w0_out.txt")"
+cp "$H1_DIR/last_snapshot.json" "$TMP/w0_last1.json"
+LOG_DIR="$H1_DIR" SNAPSHOT_INPUT="$TMP/d2.xml" bash "$AP" --platform android --has "Loading" > /dev/null 2>&1
+expect_eq "--wait 0 失败 rc=1" "1" "$?"
+expect_eq "--wait 0 失败仍写 last" "$(fp_of "$SEQ_DIR/fail.json")" "$(fp_of "$H1_DIR/last_snapshot.json")"
+expect_eq "--wait 0 失败仍轮转 prev" "$(fp_of "$TMP/w0_last1.json")" "$(fp_of "$H1_DIR/prev_snapshot.json")"
+
+# 超时附 diff：末轮空树不得污染「产生断言结果那轮」的 payload（P1-1）
+rm -f "$H2_DIR/last_snapshot.json" "$H2_DIR/prev_snapshot.json"
+LOG_DIR="$H2_DIR" SNAPSHOT_INPUT="$TMP/d1.xml" bash "$SNAP" --platform android --json > /dev/null 2>&1
+out=$(h2 "fail,4" --wait 2 --interval 0.5 2>&1)
+expect_eq "H2 末轮空树仍 rc=1（有断言结果）" "1" "$?"
+expect_contains "H2 超时附 diff" "与上一份快照的差异" "$out"
+d_nodes=$(printf '%s\n' "$out" | sed -n 's/.*与上一份快照的差异.*nodes=\([0-9]*\):.*/\1/p' | head -1)
+f_nodes=$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["nodes"]))' "$SEQ_DIR/fail.json")
+expect_eq "H2 超时 diff 的 current 为断言那轮（非末轮空树）" "$f_nodes" "${d_nodes:-x}"
+
+# 断言引擎自身报错（rc=2）透传，不当作「页面没到」重试
+rm -f "$SEQ_DIR/count"
+SEQ="pass" SEQ_DIR="$SEQ_DIR" LOG_DIR="$H2_DIR" SNAPSHOT_BIN="$TMP/stub_seq.sh" \
+  bash "$AP" --platform android --file "$TMP/no_such_assert.txt" --wait 10 > /dev/null 2>&1
+expect_eq "--wait 断言文件不存在 rc=2（透传）" "2" "$?"
+expect_eq "--wait 断言引擎错误只轮询 1 次" "1" "$(cat "$SEQ_DIR/count")"
+
+out=$(h2 "fail" --wait 1 --interval 0.5 --no-diff 2>&1)
+case "$out" in *"与上一份快照的差异"*) bad "--wait --no-diff 仍输出 diff" ;; *) ok "--wait --no-diff 不输出 diff" ;; esac
+
 # ---------- 汇总 ----------
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"
