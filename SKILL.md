@@ -22,7 +22,8 @@ metadata:
 2. `.debug.env` 含各平台常量（包名/BundleID/AppName + 可选 flavor/scheme/显式产物路径），推断错误可手工修正后重试。
    > `.debug.env` 是 **KEY=VALUE 常量文件**，由 `scripts/_env.sh` **安全解析**（不 `source`、不 `eval`、不展开变量）。
    > 允许 `export ` 前缀 / 行尾 ` #` 注释 / CRLF；**变量引用（`$HOME/…`）不展开**；值里含 `;`、反引号、`$(` 会被**拒绝**（防注入）。
-3. **一次自检代替逐项探测**：`bash <S>/scripts/doctor.sh [--platform android|ios|macos|windows]`
+3. **一次自检代替逐项探测**：`bash <S>/scripts/doctor.sh [--platform android|ios|ios-device|macos|windows|all]`
+   （`ios` = 模拟器 + 真机都报告；`ios-device` = 只认真机，与 `snapshot.sh --platform ios-device` 同一取值）
    一条命令报告「配置 / 工具链 / 设备 / 产物 / 可选密钥」五类事实（✅ 可用 / ⚠️ 可选缺失 / ❌ 阻塞），
    rc=0 才继续；rc=1 说明有阻塞项，按提示修复，**不要**再用 `adb devices`、`which xxx` 逐条试探。
    > 判据纪律（借 agent-device / MobileBuildMCP 的 doctor 模式）：**「命令被拒」≠「环境不可用」**。

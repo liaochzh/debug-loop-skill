@@ -16,6 +16,11 @@ else
   exit 1
 fi
 
+# iOS 真机枚举的**单一来源**（与 doctor.sh 共用）：`scripts/_ios_device.sh`
+#   （识别规则「xctrace Devices 段里 Mac 排最前 / iPhone 行有两组括号」写两份必然漂移）
+# shellcheck source=/dev/null
+[ -f "$_SELF_DIR/../_ios_device.sh" ] && source "$_SELF_DIR/../_ios_device.sh"
+
 if [ ! -f "pubspec.yaml" ]; then
   echo "❌ 请在 Flutter 项目根目录执行本脚本（当前: ${PWD}）"
   exit 1
@@ -83,16 +88,10 @@ resolve_macos_bundle_id() {
 }
 
 # 已连接的 iOS 真机 UDID（排除模拟器）
-# 守卫（内移）：无 iOS 真机 ⇒ grep 无匹配(1)；head 截断上游 ⇒ SIGPIPE(141) —— 均属「非 0 但正常语义」，
-#   不得触发 errexit 使调用方静默死（`write_caps_ios_device` 的「❌ 未检测到 iOS 真机」友好提示须可达）
-resolve_ios_device() {
-  # 只取「真 iPhone」行：xctrace 的 Devices 段里 Mac 自己排在最前（且只有一层括号 `Name (UUID)`），
-  # iPhone 行是 `Name (iOS版本) (硬件UDID)` ⇒ 用「两组括号」区分，避免把 Mac 的 UUID 当设备。
-  xcrun xctrace list devices 2>/dev/null \
-    | awk '/^== Devices ==/{f=1;next} /^== Simulators ==/{f=0} f' \
-    | grep -E '\([0-9][^)]*\)[[:space:]]*\([0-9A-Fa-f-]{25,}\)' \
-    | grep -Eo '\([0-9A-Fa-f-]{25,}\)' | tr -d '()' | head -1 || true
-}
+# 实现在 `scripts/_ios_device.sh`（本文件顶部已 source）—— 与 doctor.sh 共用同一识别规则：
+#   只取「真 iPhone」行（xctrace 的 Devices 段里 Mac 自己排最前，且只有一层括号 `Name (UUID)`；
+#   iPhone 行是 `Name (iOS版本) (硬件UDID)` ⇒ 用「两组括号」区分）。
+# 守卫（在 helper 内）：无 iOS 真机 ⇒ 空输出；调用方按「空串」判「未检测到」。
 
 # 已启动的 iOS 模拟器 UDID（优先 IOS_SIM_UDID，否则取 booted 第一个）
 resolve_ios_sim() {
@@ -165,25 +164,45 @@ write_caps_ios_device() {
   # 生命周期（能正确切后台），产物用离线手签包，无需 Xcode 账号。
   # 约定：xctestrun 必须与 `Build/Products/Debug-iphoneos/` 同级，否则 __TESTROOT__ 失效。
   local xctestrun="${IOS_XCTESTRUN:-}" bootstrap=""
+  if [ -z "$xctestrun" ]; then
+    # 自动发现：`wda_prepare.sh` 的默认产物目录（build/debug/wda-prebuilt/Build/Products/）
+    # 里若有按本设备命名的 xctestrun，就直接走 xctestrun 路线，免得把**含设备 UDID 的绝对路径**
+    # 写进随项目提交的 .debug.env。找不到 ⇒ 维持旧行为（会话期跑 xcodebuild）。
+    local wdap="build/debug/wda-prebuilt/Build/Products" pver0
+    pver0="$(ideviceinfo -u "$udid" -k ProductVersion 2>/dev/null || true)"
+    if [ -n "$pver0" ] && [ -f "$wdap/${udid}_${pver0}.xctestrun" ]; then
+      xctestrun="$wdap/${udid}_${pver0}.xctestrun"
+    fi
+  fi
   if [ -n "$xctestrun" ]; then
     if [ ! -f "$xctestrun" ]; then echo "❌ IOS_XCTESTRUN 不存在: $xctestrun" >&2; exit 1; fi
+    # 绝对化：caps 里的 bootstrapPath 会交给 appium server 解析，相对路径依赖其 cwd
+    xctestrun="$(cd "$(dirname "$xctestrun")" && pwd)/$(basename "$xctestrun")"
     bootstrap="$(cd "$(dirname "$xctestrun")" && pwd)"
-    # appium 只认 <bootstrapPath> 下的固定命名：优先 <udid>_<sdkVersion|platformVersion>.xctestrun，
-    # 找不到再回退 WebDriverAgentRunner_iphoneos-arm64.xctestrun 复制成按设备名。两种都备上。
-    local sdk pver
+    # appium 的查找顺序（appium-webdriveragent/utils/xctestrun.js:getXctestrunFilePath）：
+    #   ① `<udid>_<iosSdkVersion>.xctestrun` → ② `<udid>_<platformVersion>.xctestrun`
+    #   → ③ `WebDriverAgentRunner_iphoneos<version>-arm64.xctestrun`（复制成 ①② 形式）
+    # ⚠️ iosSdkVersion 可能取不到（Xcode 27 下 `xcodebuild -showdestinations` 对 bootstrapPath 里
+    #    不存在的 .xcodeproj 报 66/75 ⇒ 传进来是空串）⇒ 它会先找 `<udid>_.xctestrun`。
+    #    若目录里残留这种空后缀文件，appium 会拿它当产物（版本/端口全错，WDA 起不来）。
+    # ⚠️ platformVersion 报的是 `26.6`（不带补丁号），与 `ideviceinfo` 的 `26.6.1` 不同 ⇒ 两种都备。
+    local sdk pver mm
     sdk="$(xcrun --sdk iphoneos --show-sdk-version 2>/dev/null || true)"
     pver="$(ideviceinfo -u "$udid" -k ProductVersion 2>/dev/null || true)"
-    # 每次覆盖：wda_prepare 重跑后，保留旧副本会让 appium 用陈旧产物
-    cp -f "$xctestrun" "$bootstrap/WebDriverAgentRunner_iphoneos-arm64.xctestrun" \
-      || { echo "❌ 无法写入 $bootstrap/WebDriverAgentRunner_iphoneos-arm64.xctestrun" >&2; exit 1; }
-    if [ -n "$sdk" ]; then
-      cp -f "$xctestrun" "$bootstrap/${udid}_${sdk}.xctestrun" \
-        || { echo "❌ 无法写入 $bootstrap/${udid}_${sdk}.xctestrun" >&2; exit 1; }
-    fi
-    if [ -n "$pver" ]; then
-      cp -f "$xctestrun" "$bootstrap/${udid}_${pver}.xctestrun" \
-        || { echo "❌ 无法写入 $bootstrap/${udid}_${pver}.xctestrun" >&2; exit 1; }
-    fi
+    mm="$(printf '%s' "$pver" | cut -d. -f1,2)"
+    # 每次覆盖：wda_prepare 重跑后，保留旧副本会让 appium 用陈旧产物。
+    # ⚠️ 源文件本身可能就命中其中一个名字（自动发现取的就是 `<udid>_<pver>.xctestrun`）⇒
+    #    macOS 的 cp 对「同一文件」会打印 "are identical (not copied)" 并返回 1，必须跳过。
+    local dst
+    for dst in "WebDriverAgentRunner_iphoneos-arm64.xctestrun" \
+               ${sdk:+"${udid}_${sdk}.xctestrun"} \
+               ${pver:+"${udid}_${pver}.xctestrun"} \
+               ${mm:+"${udid}_${mm}.xctestrun"} \
+               ${mm:+"WebDriverAgentRunner_iphoneos${mm}-arm64.xctestrun"}; do
+      [ "$bootstrap/$dst" = "$xctestrun" ] && continue
+      cp -f "$xctestrun" "$bootstrap/$dst" \
+        || { echo "❌ 无法写入 $bootstrap/$dst" >&2; exit 1; }
+    done
     # xctestrun 里的 TestHostPath 用 __TESTROOT__ 相对路径 ⇒ 必须与 Debug-iphoneos 同级
     if [ ! -d "$bootstrap/Debug-iphoneos" ]; then
       echo "⚠️ $bootstrap 下没有 Debug-iphoneos/，xctestrun 的 __TESTROOT__ 可能失效（应指向 Build/Products 目录）" >&2
@@ -193,9 +212,9 @@ write_caps_ios_device() {
       prebuilt=""
     fi
   fi
-  python3 - "$out" "$udid" "$bid" "$team" "$app" "$wda" "$prebuilt" "$bootstrap" <<'PY'
+  python3 - "$out" "$udid" "$bid" "$team" "$app" "$wda" "$prebuilt" "$bootstrap" "${IOS_ATTACH_ONLY:-0}" <<'PY'
 import json, sys
-out, udid, bid, team, app, wda, prebuilt, bootstrap = sys.argv[1:9]
+out, udid, bid, team, app, wda, prebuilt, bootstrap, attach = sys.argv[1:10]
 caps = {"platformName": "iOS", "appium:automationName": "XCUITest",
         "appium:udid": udid, "appium:bundleId": bid,
         "appium:xcodeOrgId": team, "appium:xcodeSigningId": "Apple Development"}
@@ -205,7 +224,10 @@ if not bootstrap and not prebuilt:
     caps["appium:allowProvisioningDeviceRegistration"] = True
 if app:
     caps["appium:app"] = app
-if wda:
+if wda and not bootstrap:
+    # xctestrun 路线下 WDA 的 bundle id 由 xctestrun 里的 TestHostBundleIdentifier 决定，
+    # 传 updatedWDABundleId 只会引入「与实际产物不一致」的风险（.debug.env 的 IOS_WDA_BUNDLE_ID
+    # 是给会话期构建路线用的，与离线手签产物未必同名）⇒ 该路线下不下发。
     caps["appium:updatedWDABundleId"] = wda
 if prebuilt:
     # 二者必须成对：appium 只有 usePreinstalledWDA 时才走预构建分支（否则仍跑 xcodebuild）
@@ -214,7 +236,19 @@ if prebuilt:
 if bootstrap:
     caps["appium:useXctestrunFile"] = True
     caps["appium:bootstrapPath"] = bootstrap
+if attach == "1":
+    # 只 attach 已运行实例：绝不重启目标 App。
+    # （iOS 14+ debug 包被非 Flutter 工具冷启动会停在限制页，UI 完全不渲染 ⇒ 整轮回归作废）
+    # ⚠️ 只有 `autoLaunch=false` 才真正阻止 WDA 启动 AUT：
+    #    appium-xcuitest-driver/commands/wda/startup.js 里是
+    #    `bundleId: driver.opts.autoLaunch === false ? undefined : bundleId`
+    #    —— 只给 forceAppLaunch/shouldTerminateApp 不够，WDA 仍会拿 bundleId 去 terminate+launch，
+    #    表现为「会话建完 App 的 PID 变了」，且注入的进程环境变量（Malloc*）随之丢失。
+    caps["appium:autoLaunch"] = False
+    caps["appium:forceAppLaunch"] = False
+    caps["appium:shouldTerminateApp"] = False
+    caps["appium:noReset"] = True
 json.dump(caps, open(out, "w", encoding="utf-8"), ensure_ascii=False)
 PY
-  echo "🧩 caps(iOS/xcuitest): udid=$udid bundleId=$bid team=$team wda=${wda:-<默认/不可签名>} prebuilt=${prebuilt:-<无>} xctestrun=${xctestrun:-<无>}"
+  echo "🧩 caps(iOS/xcuitest): udid=$udid bundleId=$bid team=$team wda=${wda:-<默认/不可签名>} prebuilt=${prebuilt:-<无>} xctestrun=${xctestrun:-<无>} attach=${IOS_ATTACH_ONLY:-0}"
 }

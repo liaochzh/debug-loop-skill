@@ -1,9 +1,11 @@
 #!/bin/bash
 # doctor.sh — 环境自检（只读：不构建 / 不启动 / 不安装 / 不改项目）
 #
-# 用法: bash <S>/scripts/doctor.sh [--platform android|ios|macos|windows|all]
+# 用法: bash <S>/scripts/doctor.sh [--platform android|ios|ios-device|macos|windows|all]
 #   在**项目根**执行（按 $PWD 找 .debug.env）。缺 .debug.env 时本脚本仍能跑完并报告，
 #   不像 android/_common.sh 那样直接 exit ⇒ 便于「先诊断、再 init」。
+#   `ios` = iOS 整体（会同时报告**模拟器与真机**）；`ios-device` = 只认真机
+#   （与 `snapshot.sh --platform ios-device` 同一取值，真机 UI 取证走 Appium）。
 # 退出码: 0 = 无阻塞项 / 1 = 有阻塞项（缺 .debug.env、env 值非法、目标平台零可用设备或关键工具缺失）
 #         2 = 用法错误
 # 设计要点（借 agent-device / MobileBuildMCP 的 doctor 思路）：
@@ -21,16 +23,17 @@ while [ $# -gt 0 ]; do
     --platform) [ $# -ge 2 ] || { echo "❌ --platform 需要取值" >&2; exit 2; }; PLATFORM="$2"; shift 2 ;;
     -h|--help)
       # 用法文本按「内容」输出，不按行号截取（头部增删注释不应泄漏代码行）
-      echo "用法: bash doctor.sh [--platform android|ios|macos|windows|all]"
+      echo "用法: bash doctor.sh [--platform android|ios|ios-device|macos|windows|all]"
       echo "  只读自检：配置 / 工具链 / 设备 / 产物 / 可选密钥；在项目根执行"
+      echo "  ios      = 模拟器 + 真机都报告；ios-device = 只认真机（Appium 语义路径）"
       echo "退出码: 0=无阻塞 / 1=有阻塞 / 2=用法错误"
       exit 0 ;;
     *) echo "❌ 未知参数: $1" >&2; exit 2 ;;
   esac
 done
 case "$PLATFORM" in
-  android|ios|macos|windows|all) ;;
-  *) echo "❌ --platform 只支持 android|ios|macos|windows|all（收到: ${PLATFORM}）" >&2; exit 2 ;;
+  android|ios|ios-device|macos|windows|all) ;;
+  *) echo "❌ --platform 只支持 android|ios|ios-device|macos|windows|all（收到: ${PLATFORM}）" >&2; exit 2 ;;
 esac
 
 BLOCKERS=0
@@ -107,11 +110,14 @@ cfg_platform() {  # <平台> → 该平台是否在 .debug.env 里配了必要�
   case "$1" in
     android) [ -n "${ANDROID_APP_ID:-}" ] ;;
     ios)     [ -n "${IOS_BUNDLE_ID:-}" ] ;;
+    # 真机与模拟器同一个 BundleID（真机侧另需签名/开发者模式，不是 .debug.env 的键）
+    ios-device) [ -n "${IOS_BUNDLE_ID:-}" ] ;;
     macos)   [ -n "${MACOS_APP_NAME:-}" ] ;;
     windows) [ -n "${WINDOWS_APP_NAME:-}" ] ;;
     *) return 1 ;;
   esac
 }
+cfg_ios_any() { cfg_platform ios || cfg_platform ios-device; }
 
 echo "[2] 工具链"
 # host 基线（任何平台都要能跑脚本）
@@ -125,20 +131,20 @@ if want android; then
     else warn "adb 缺失（本次未配置 Android，跳过）"; fi
   fi
 fi
-if want ios || want macos; then
+if want ios || want ios-device || want macos; then
   if have xcrun; then ok "xcrun 可用"; else
-    if cfg_platform ios || cfg_platform macos; then bad "xcrun 缺失（Xcode 命令行工具）"
+    if cfg_ios_any || cfg_platform macos; then bad "xcrun 缺失（Xcode 命令行工具）"
     else warn "xcrun 缺失（本次未配置 iOS/macOS）"; fi
   fi
 fi
-if [ -f pubspec.yaml ] && { want android || want ios || want macos; }; then
+if [ -f pubspec.yaml ] && { want android || want ios || want ios-device || want macos; }; then
   if have flutter; then ok "flutter: $(flutter --version 2>/dev/null | head -1)"; else bad "flutter 缺失（Flutter 工程构建不可用）"; fi
 fi
-if want android || want ios; then
+if want android || want ios || want ios-device; then
   if have maestro; then ok "maestro 可用（语义定位首选路径）"; else warn "maestro 缺失（降级 ui.sh / Vision；安装属用户动作）"; fi
 fi
-if want ios; then
-  if have appium; then ok "appium 可用（iOS 真机语义路径）"; else warn "appium 缺失（iOS 真机语义路径不可用，可选）"; fi
+if want ios || want ios-device; then
+  if have appium; then ok "appium 可用（iOS 语义路径）"; else warn "appium 缺失（iOS 真机语义路径不可用，可选）"; fi
 fi
 if want macos; then
   if have cliclick; then ok "cliclick 可用（点击稳定性）"; else warn "cliclick 缺失（坐标点击可用但稳定性差）"; fi
@@ -156,10 +162,27 @@ if want android && have adb; then
   elif cfg_platform android; then bad "无 Android 设备在线（adb devices 为空）"
   else warn "无 Android 设备在线（本次未配置 Android）"; fi
 fi
+if { want ios || want ios-device; } && have xcrun; then
+  # 真机枚举复用 appium 侧同一份实现（`scripts/_ios_device.sh`）：
+  # xctrace 的 Devices 段会把 Mac 自己排在最前，识别规则（两组括号）若各写一份必然漂移。
+  # shellcheck source=/dev/null
+  [ -f "$SCRIPT_DIR/_ios_device.sh" ] && source "$SCRIPT_DIR/_ios_device.sh"
+  IOS_DEV_LIST=$(list_ios_devices 2>/dev/null || true)
+  if [ -n "$IOS_DEV_LIST" ]; then
+    IOS_DEV_N=$(printf '%s\n' "$IOS_DEV_LIST" | wc -l | tr -d ' ')
+    IOS_DEV_SUM=$(printf '%s\n' "$IOS_DEV_LIST" | awk -F'\t' 'NR>1{printf "、"} {printf "%s(%s)", $1, $2}')
+    ok "iOS 真机在线 ${IOS_DEV_N} 台: ${IOS_DEV_SUM}"
+    if [ "${IOS_DEV_N:-0}" -gt 1 ]; then warn "多台 iOS 真机在线 — Appium/脚本默认取第一台，建议只留目标设备"; fi
+  elif [ "$PLATFORM" = "ios-device" ] && cfg_platform ios-device; then
+    bad "无 iOS 真机连接（已配置 IOS_BUNDLE_ID 且 --platform ios-device）"
+  else
+    warn "无 iOS 真机连接（真机取证需 --platform ios-device + Appium；模拟器见下行）"
+  fi
+fi
 if want ios && have xcrun; then
   BOOTED=$(xcrun simctl list devices booted 2>/dev/null | grep -c '(Booted)' || true)
   if [ "${BOOTED:-0}" -gt 0 ]; then ok "iOS 模拟器已启动 ${BOOTED} 台"; else
-    if cfg_platform ios; then warn "无已启动的 iOS 模拟器（真机走 --device，需签名与开发者模式）"
+    if [ "$PLATFORM" = "ios" ] && cfg_ios_any; then warn "无已启动的 iOS 模拟器（若目标为真机，--platform ios-device）"
     else warn "无已启动的 iOS 模拟器（本次未配置 iOS）"; fi
   fi
 fi

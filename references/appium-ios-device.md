@@ -23,13 +23,28 @@
 - **路线 B（离线，推荐在凭据不可用时）**：
   1. `wda_prepare.sh --team-id <T> --profile ~/Library/MobileDevice/Provisioning\ Profiles/<uuid>.mobileprovision --wda-bundle-id <AppBundleId>.wda`（无签名构建 + 描述文件手签，通配 profile 即可覆盖 runner 的 `.xctrunner`）；
   2. `export IOS_XCTESTRUN=<产出>/Build/Products/WebDriverAgentRunner_iphoneos<SDK>-arm64.xctestrun` + `export IOS_WDA_BUNDLE_ID=<AppBundleId>.wda`；
+     **可省略**：`wda_prepare.sh` 默认产物目录 `build/debug/wda-prebuilt/Build/Products/` 下若有 `<udid>_<系统版本>.xctestrun`，`_common.sh` 会自动发现并走 xctestrun 路线（免得把含设备 UDID 的绝对路径写进随项目提交的 `.debug.env`）；`IOS_XCTESTRUN` 也可给**相对项目根**的路径，脚本内部绝对化后再下发给 appium；
   3. 之后 `source.sh` / `tap.sh` / `flow.sh` 走 `xcodebuild test-without-building`（XCTest 托管 WDA，能正确切后台），不再需要 Xcode 账号；
+     该路线下**不下发** `appium:updatedWDABundleId`（WDA 的 bundle id 由 xctestrun 的 `TestHostBundleIdentifier` 决定，与 `.debug.env` 的 `IOS_WDA_BUNDLE_ID` 未必同名）；
   4. 约束：xctestrun 必须与 `Build/Products/Debug-iphoneos/` 同级（appium 按 `__TESTROOT__` 相对解析），脚本会自动补 appium 认的固定文件名；
 - **不要**在会话期全局传 `PROVISIONING_PROFILE_SPECIFIER`（会被套到 framework target：`WebDriverAgentLib does not support provisioning profiles`）；
 - `IOS_PREBUILT_WDA`（`prebuiltWDAPath` + `usePreinstalledWDA`）仅作备选：它依赖 RemoteXPC 后台启动；Xcode 27 栈上 RemoteXPC 不可用时会回退 devicectl **前台**启动，runner 无法自切后台导致 8100 不通；
 - 元素查找默认最长等 10s（`driver.py` 内置轮询；封装脚本不暴露 `--element-wait`）；首帧慢时用 `--wait N`。
 - 首次安装后的首启偶发空树（1099 B，Flutter semantics 激活延迟），重跑一次 `source.sh` 即恢复。
-- ⚠️ 设备上的 App 必须是 **profile/release** 包：Flutter **debug** 包被 WDA/桌面冷启动只会显示「In iOS 14+, debug mode Flutter apps can only be launched from Flutter tooling…」，page source 里没有业务元素。用 `ios/build.sh --device`（默认 `--profile`）+ `run.sh --device` 重装。
+- ⚠️ Flutter **debug** 包**可以**驱动，但必须满足两条，否则 page source 里只有「In iOS 14+, debug mode Flutter apps can only be launched from Flutter tooling…」限制页：
+  1. 先用 `flutter run -d <udid>` 把它启动起来（唯一可用的 debug 启动方式，见 `.ai/commands.md`；`devicectl process launch` / `run.sh --device` 冷启动必然踩限制页）；
+  2. `.debug.env` 设 `IOS_ATTACH_ONLY="1"` ⇒ caps 带 **`autoLaunch=false`** + `forceAppLaunch=false` + `shouldTerminateApp=false` + `noReset=true`，Appium **只 attach 不重启**（否则会话创建即重启 App，直接掉进限制页）。
+     **`autoLaunch=false` 是唯一真正生效的那个**：`appium-xcuitest-driver/commands/wda/startup.js` 里写的是
+     `bundleId: driver.opts.autoLaunch === false ? undefined : bundleId` —— 只给另外两个，WDA 仍会拿 `bundleId` 去
+     terminate+launch；表现为「会话建完 App 的 PID 变了」，且**注入的进程环境变量（`Malloc*`）随之丢失**（压测证据作废）。
+  另：`ios/run.sh --device` 的 `devicectl` 启动路径同理不可用于 debug 包，只适合 profile/release 包。
+- ⚠️ **产物可能悄悄是 debug 包**：Flutter 的 debug 与 release 都可能落在 `build/ios/iphoneos/`。判据只看一条：
+  `build/ios/iphoneos/TinoSec.app/Frameworks/App.framework/flutter_assets/kernel_blob.bin` **存在 ⇒ debug**（JIT）；
+  不存在才是 AOT（profile/release）。本机实测：`build/ios/iphoneos/` 是 debug（含 kernel_blob），
+  AOT 在 `build/ios/Release-iphoneos/`。**踩坑**：devicectl 冷启动 debug 包会永远停在**启动 logo 页**
+  （console 打 `Cannot create a FlutterEngine instance in debug mode without Flutter tooling or Xcode.`），
+  此时 Appium 的 `tap` 步骤**照样返回 ok**（点在空页上）、三张截图字节完全相同 ⇒ 完全静默的空跑，
+  压测「未命中」毫无意义。压测前务必先 `shot.sh --device` 看一眼是不是真 UI。
 - ⚠️ 自动签名会在设备未注册时**自动注册设备**（占用团队年度设备额度），并自动创建/更新描述文件；不触碰 App 自身签名（路线 B 不涉及）。
 
 **macOS（mac2）**：
