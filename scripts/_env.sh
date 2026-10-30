@@ -141,6 +141,9 @@ parse_debug_env() {
       IOS_APP_PATH)       IOS_APP_PATH="$val" ;;
       IOS_TEAM_ID)        IOS_TEAM_ID="$val" ;;
       IOS_DEVICE_APP)     IOS_DEVICE_APP="$val" ;;
+      IOS_APP_NAME)       IOS_APP_NAME="$val" ;;       # App 进程名（syslog 行过滤；缺省从产物 CFBundleExecutable 推导）
+      IOS_WDA_BUNDLE_ID)  IOS_WDA_BUNDLE_ID="$val" ;;  # 真机 WDA runner bundle id（须本团队可签名，如 <AppId>.wda）
+      IOS_ATTACH_ONLY)    IOS_ATTACH_ONLY="$val" ;;     # 1=Appium 只 attach 已运行 App（禁 forceAppLaunch/noReset 重启）
       MACOS_APP_NAME)     MACOS_APP_NAME="$val" ;;
       MACOS_APP_BUNDLE)   MACOS_APP_BUNDLE="$val" ;;
       WINDOWS_APP_NAME)   WINDOWS_APP_NAME="$val" ;;
@@ -214,6 +217,14 @@ validate_debug_env() {
   if [ -n "${IOS_APP_PATH:-}" ]; then     _env_check_path IOS_APP_PATH     "$IOS_APP_PATH";     fi
   if [ -n "${MACOS_APP_BUNDLE:-}" ]; then _env_check_path MACOS_APP_BUNDLE "$MACOS_APP_BUNDLE"; fi
   if [ -n "${IOS_DEVICE_APP:-}" ]; then   _env_check_path IOS_DEVICE_APP   "$IOS_DEVICE_APP";   fi
+  if [ -n "${IOS_APP_NAME:-}" ]; then     _env_check_path IOS_APP_NAME     "$IOS_APP_NAME";     fi  # 可执行名可含空格，走路径档
+  if [ -n "${IOS_WDA_BUNDLE_ID:-}" ]; then _env_check_identifier IOS_WDA_BUNDLE_ID "$IOS_WDA_BUNDLE_ID"; fi
+  if [ -n "${IOS_ATTACH_ONLY:-}" ]; then
+    case "$IOS_ATTACH_ONLY" in
+      0|1) ;;
+      *) env_fail "键 IOS_ATTACH_ONLY（第 $(env_line_of IOS_ATTACH_ONLY) 行）只能为 0 或 1（当前: $(_env_sanitize "${IOS_ATTACH_ONLY}")）" ;;
+    esac
+  fi
   if [ -n "${WINDOWS_EXE_PATH:-}" ]; then _env_check_path WINDOWS_EXE_PATH "$WINDOWS_EXE_PATH"; fi
   if [ -n "${LOG_DIR:-}" ]; then
     _env_check_path LOG_DIR "$LOG_DIR"
