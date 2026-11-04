@@ -49,7 +49,7 @@
 
 ## 沙箱 / 真机链路（2026-11-04）
 
-方案：`docs/plan/20261104-debug-sandbox-followups.md`；审查：`docs/review/20261104-debug-sandbox-followups.md`（结论「通过」，7 条问题全部处置）；提交：`c2cf081`（**未 push**，发布走 `publish.sh`）。
+方案：`docs/plan/20261104-debug-sandbox-followups.md`；审查：`docs/review/20261104-debug-sandbox-followups.md`（结论「通过」，7 条问题全部处置）；提交：`c2cf081`（A/B/C/D）；随后补提交上一会话遗留的 iOS 链路改动 `e61ed99`（真机枚举三级回退 / 沙箱降级契约 / Appium 坐标与退后台，审查见 `docs/review/20261104-ios-sandbox-fallback-appium-pointer{,.r2}.md`，第 2 轮 LGTM）。**均未 push**，发布走 `publish.sh`。
 
 ### 已完成
 - **A `safe_run.sh` 软链 SDK 推导**：`--profile build` 的 Flutter SDK 缓存改为「先解析软链链再校验」；`resolve_symlink_chain()` 拒相对路径、逐跳 `cd` + `pwd -P`、10 跳上限；解析失败一律不放行且走 stderr 可观测。原 6 道校验保留。回归新增独立分组 `N13-flutter软链`（不引用 `N12_SKIP`、PATH 收窄），`test_safe_run.sh` 共 **43 项**。
@@ -62,7 +62,7 @@
 
 ### 未完成
 - `--mode release` 未实测（只跑了 profile）。
-- 仓库仍有 10 个早前会话的 `M` 文件未提交（与本轮无关，未暂存未改动）。
+- 仓库已干净（10 个上一会话遗留改动已于 `e61ed99` 入库，并补了 `assert.sh`/`tap.sh`/`flow.sh` 的 rc=2 用法修正与 JSON 顶层类型防御）。
 
 ### 本轮新增的坑
 - **`command -v flutter` 会静默跳过断链/成环**：想验证「软链解析失败是否可观测」时，用断链或成环构造根本进不了解析器；必须用 13 跳超长链（终点可执行但超上限）。
