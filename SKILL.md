@@ -32,7 +32,9 @@ metadata:
 ## 执行约定
 
 - 所有脚本必须从**项目根**执行（按 `$PWD` 查找 `.debug.env`，产物写入项目 `build/debug/`）
-- 调用形式：`bash <S>/scripts/<platform>/<script>.sh [args]`
+- 调用形式：`bash <S>/scripts/safe_run.sh [--profile P] -- bash <S>/scripts/<platform>/<script>.sh [args]`
+  （沙箱入口为唯一形态；`<S>` 软链与 realpath 两形态都在白名单，见「权限纪律」）
+  > 下文各平台命令表里的 `bash <S>/scripts/…` 示例均为**裸形态**；实际执行时**一律**前置入口：`bash <S>/scripts/safe_run.sh [--profile P] -- <该命令>`（profile 选择见「权限纪律」表）。
 - **启动经济**：一次定位设备、一次 dump 页面、一次读日志。禁止用 `--help`、`adb devices`、`ui.sh` 反复探路来「确认状态」——
   目标脚本自身会给出事实与失败原因；重复探测既慢，又容易把「页面确实是空的」误判成「权限或环境坏了」。
   需要新一轮事实时，先问「上一条证据缺什么」，而不是把同样的命令再跑一次。
@@ -79,35 +81,94 @@ metadata:
 
 ### 权限纪律（作为 subagent 执行时**必须**遵守）
 
-- **单命令纪律**：一条 `shell` 只跑**单条命令**；多步串联 / 条件 / 循环一律**写进脚本**再 `bash <S>/scripts/…` 调用。
-  原因：本 skill 在 subagent 档是「**白名单 + 兜底 `deny`**」，白名单之外的复合行会落兜底 `deny`（**秒拒**，不再挂 1 h）。
-  ⚠️ 白名单按**逐段判权**（引擎实测）：复合命令中**任一段**不可达 `allow` ⇒ **整条拒**（故 `&&` / `;` 串联基本不可用）。
-- **白名单命令形态**（B6-1 后；2026-10-23 起仅留实存拼写），共三条 allow：
-  1. `bash <home>/.config/opencode/skills/debug-loop/scripts/*`
-  2. `bash <home>/Projects/debug-loop-skill/scripts/*`（上面目录的 **symlink 目标**，与 1 是同一条目，改一处即两处生效）
-  3. `<home>/.config/opencode/skills/debug-loop/scripts/*`（**裸路径**形态，不带 `bash` 前缀）
-  另放行 `python3 <…>/scripts/vision/vision_read.py*` 与 `python3 <…>/scripts/appium/driver.py*`。
-  `~` 形式**不放行**（`shell` 的 pattern 侧**不展开** `~`）；`<home>/code/opencode-skills/…` 已随死规则清理移除，该目录从未实存。
-- **单命令放行集**（2026-10-23 实测，均为**单条**命令）：`adb *`、`ls *`、`pwd`、`head *`、`tail *`、`wc *`、`grep *`、`which *`、
-  `flutter build *` / `flutter test*` / `flutter analyze*`、`maestro *`、`appium *`、`xcrun *`、`screencapture *`、`echo *`、
-  `printenv *`、`git status *` / `git diff *`。
-  ⚠️ **被拒 ≠ 整档无 shell**：单条命令落兜底 `deny`（如 `cat`、`sed`、`sort`、`mkdir`、重定向）时，按本表单命令换形态或改用脚本，
-  **不得**据此判定「权限被拒」中止条件（2026-10-23 事故：`pwd` 被拒后误判全禁并中止，同期 `adb devices` 实为 allow）。
-  ⚠️ `.debug.env` **不可 `cat`**（read 面 env 家族 deny）—— 由 `scripts/_env.sh` 解析，需要键名交回主 agent 转述。
-- **subagent 档没有 `mkdir` / 写重定向** ⇒ 产物落点**一律交给脚本**：
+- **唯一执行入口 = 沙箱**：本 skill 的所有命令（含 skill 自己的脚本）一律经 `safe_run.sh` 执行：
+
+  ```bash
+  bash <S>/scripts/safe_run.sh [--profile ui|build|ios|macos] [--project-root <proj>] -- <命令...>
+  ```
+
+  | profile | 用途 | 额外放行 |
+  |---|---|---|
+  | `ui`（默认） | 截图 / dump / 点击 / 日志等日常操作 | 写 `build/`、`docs/test/`、`$TMPDIR`、`/private/tmp` |
+  | `build` | `flutter build` / `gradle` / `xcodebuild` | 写整个项目 + 缓存目录（含 `~/.pub-cache`、`~/.gradle`、`~/.dart-tool`、**Flutter SDK 的 `bin/cache`**），**且允许出网**（依赖下载；证书校验放行 trustd 通道） |
+  | `ios` | `xcrun simctl` / `devicectl` / 模拟器截图 | 补 CoreSimulator / diskimaged 等 mach 通道 |
+  | `macos` | `screencapture` / `cliclick` / 智能点击 | 补 WindowServer / CARenderServer / 服务发现通道 |
+
+  - **沙箱是唯一执行边界**：写面只到项目 `build/`、`docs/test/`、`$TMPDIR`、`/private/tmp`（`--profile build` 才放开整个项目根），
+    外加调试工具的缓存目录 `~/.maestro`、`~/.appium`、`~/Library/Logs/maestro`（maestro 解包依赖/写日志锁需要，所有 profile 都有）；
+    `~/.ssh`、`~/.aws`、`~/.gnupg`、`~/.netrc`、`~/Library/Keychains` 读写全拒，`~/Library/LaunchAgents*`、登录脚本只拒写；
+    `.env` / `.env.local` 等 env 家族在 shell 面也读不到（仅 `.debug.env` 放行）；
+    iOS 真机链路已放行 **usbmuxd 本机 unix socket**（`libimobiledevice`：`idevice_id`/`ideviceinfo`/`idevicesyslog`；
+    `xctrace list devices` 在沙箱内不可用，设备枚举自动回退 `devicectl` / `idevice_id`）；
+    默认禁网（仅放行 adb `5037` / appium `4723` 的**本机**端口；另允许 `bind` 本机任意端口，仅 adb 起 daemon 需要）。
+  - `--project-root` 缺省取 `$PWD`；**只接受白名单根**（`~/Projects`、`/Volumes`、`/private/tmp`、`$TMPDIR`），
+    且拒绝 `$HOME` / `/` 本体。缺省且 `$PWD` 不在白名单时**写面自动收窄到 `$TMPDIR`**（stderr 会提示）；
+    要写项目内产物必须显式传项目根。需要新根改 `safe_run.sh` 的 `ALLOW_ROOTS`。
+  - **退出码**：`2` = 用法错；**`117` = 沙箱不可用**（fail-closed，命令根本没跑）。
+    遇到 `117` 必须停下并回报「沙箱不可用」，**不得**绕过入口裸跑命令。
+    ⚠️ 其余退出码是**命令自己的**、原样透传：例如 `snapshot.sh` 的 `rc=4` = 语义树为空（正常观测，见「页面观测阶梯」），
+    **不要**把 `4` 当成沙箱故障。
+  - 裸 `bash <S>/scripts/<x>.sh`（不经 `safe_run.sh`）在白名单外 ⇒ 秒拒；这是**结构护栏**，不是缺权限。
+  - **`<S>` 必须写成绝对路径**（`/Users/<你>/.config/opencode/skills/debug-loop` 或 `.../Projects/debug-loop-skill` 两种都在白名单）；
+    写成 `~/.config/...`、`$HOME/...` 或相对路径**不匹配**白名单 ⇒ 秒拒。这是踩过的坑，不是权限问题。
+  - 沙箱内 `pgrep` / `ps` 不可用，`kill` 只能作用于**本沙箱内**进程：日志采集的存活判断已改用 pid 文件（见 `ios/logs.sh`）。
+- **`Operation not permitted` 的读法**（沙箱拒绝）：
+  - 写 `~/.ssh`、写项目外路径、连外网 ⇒ **边界正常**：换落点（`build/debug/`、`$TMPDIR`）或改用 skill 脚本，**不算权限被拒中止**。
+  - 需要出网（下载依赖）⇒ 用 `--profile build`，不要 `--net` 硬开普通 profile。
+  - 报 `sandbox-exec: sandbox_apply: Operation not permitted` ⇒ **嵌套沙箱被系统拒绝**（典型于 `flutter build ios`）：
+    换 profile/加权限都无效，按下条交回主 agent，**不要**反复重试。
+  - 只有「沙箱入口本身起不来（rc=117）」或「设备侧权限（USB 调试授权、屏幕录制、辅助功能）」才算中止条件 4。
+- **沙箱内**不能**跑 `flutter build ios`**（含 `--profile build`）：xcodebuild 解析 SwiftPM 依赖时会**再套一层
+  `sandbox-exec`**，macOS 不允许嵌套沙箱 ⇒ 必失败（实测命令形态：
+  `bash <S>/scripts/safe_run.sh --profile build --project-root <项目根> -- bash <S>/scripts/ios/build.sh --device`）：
+  ```
+  xcodebuild: error: Could not resolve package dependencies:
+    sandbox-exec: sandbox_apply: Operation not permitted
+  ```
+  已实测**无效**的绕过：`env SWIFTPM_DISABLE_SANDBOX=1`（SwiftPM 环境变量）、
+  `xcodebuild -resolvePackageDependencies -onlyUsePackageVersionsFromResolvedFile`（xcodebuild 参数）、
+  以及换成 `--profile ios`。
+  ⇒ **subagent 不得自行到宿主机裸跑构建**（那是绕过唯一执行边界）；应停止并在回报里写
+  「iOS 构建需主 agent 在宿主机执行」，由主 agent 构建后你再继续安装/启动/取证。
+- **`--profile build` 的 Flutter SDK 缓存按「真实路径」判定**：`command -v flutter` 常是软链
+  （brew cask：`/opt/homebrew/bin/flutter` → `Caskroom/<ver>/flutter/bin/flutter`），入口会先解析
+  软链链（每跳 `pwd -P`、上限 10 跳）再校验 `<SDK>/bin/cache`；相对路径 / 解析失败（超过 10 跳）
+  **不放行且 stderr 说明原因**（此时 flutter 写 cache 报 `Operation not permitted`，属已知限制，不要改权限面）。
+  断链 / 成环会被 `command -v` 直接跳过（等同「没装 flutter」，静默），这种情况本就不放行。
+- **iOS 真机安装（`devicectl install`）在沙箱内不可用**（实测：`sandbox_extension_issue_file` 被拒，
+  `.app` 的访问权限交不给沙箱外的 CoreDevice helper ⇒ 读 `Info.plist` 报 `NSCocoaErrorDomain 257`）。
+  `ios/run.sh --device` 在沙箱内会带宿主机指引 **rc=3** 退出（**先停旧采集、安装失败即退出，不留孤儿采集**）；
+  安装+启动交主 agent 在宿主机跑 `bash <S>/scripts/ios/run.sh --device`（cwd 为项目根）。
+  ⚠️ 把 `.app` 暂存到 `${TMPDIR}` **无效**（已实测），不要重试这类绕过。
+- **沙箱内已知能力限制（iOS 模拟器语义能力）**：XCUITest 驱动（maestro 的 iOS 侧）在嵌套沙箱内起不来
+  （`maestro-driver` 数秒内退出，JVM 无限轮询 `127.0.0.1:22087`）⇒ 以下命令在沙箱内**直接 rc=3 快失败**，不重试：
+  - `snapshot.sh --platform ios`、`assert_page.sh --platform ios`
+  - `maestro/*`（iOS 模拟器路径：`assert.sh` / `tap.sh` / `assert_batch.sh` / `flow.sh`）
+  - **降级做法**：UI 判定用 `shot.sh`（截图）+ `logs.sh`（日志）+ 人工/视觉判读；**不要**反复重试或用别的形态试探。
+  - **iOS 真机不受限**：走 Appium（`snapshot.sh --platform ios-device` / `appium/driver.py`），沙箱内可用（`--profile ios`）。
+  - 需强行试验时：`SNAPSHOT_MAESTRO_TRY=1`（snapshot，默认 45 s 有界等待）/ `MAESTRO_ALLOW_SANDBOX=1`（maestro 脚本，
+    可能挂起，需自加超时）。
+- **`.debug.env` 现在可读**（read 面对 build / autoDebug / debug 放行 `*.debug.env`）：
+  需要键值时可直接 `bash <S>/scripts/safe_run.sh -- cat .debug.env`，或交给 `scripts/_env.sh` 解析。
+  `.env` / `.env.*` **仍不可读**，不要尝试绕过。
+- **产物落点**：沙箱内可写 `build/`、`docs/test/`、`$TMPDIR`、`/private/tmp`；因此：
   - 截图 → `shot.sh`（自带 `mkdir -p "$LOG_DIR"`）
-  - 拉设备文件 → `pull.sh <设备侧路径> [本地名]`（自带 `mkdir -p` + `adb pull`）
+  - 拉设备文件 → `pull.sh <设备侧路径> [本地名]`
   - 读行区间 → **用 `read` 工具的 `offset`/`limit`**（不是 `sed -n 'a,bp'`）
-  - 抽字段 → **`grep -oE` / `grep -E -B/-A`**（不是 `sed 's///'`）
-  - 去重/排序 → 本档面**无** `sort`/`uniq` ⇒ 用 `scripts/sort.sh [-u] [-r] [-n] [-k <列>] [-o <文件>] [输入文件]`（stdin 亦可）；去重加 `-u`，数值排序 `-n`，按列 `-k N`，落盘 `-o`（写入 LOG_DIR）
-  > 需要一次性多步逻辑时：写进 skill 内脚本再 `bash <S>/scripts/…` 调用（`bash …/scripts/*` 在白名单内）。
-  > `$TMPDIR` 临时脚本配方（`mkdir -p "$T"; cat > …`）在 **build/debug 档**可用，在 **autoDebug 档不可用**（无 `mkdir`、写重定向被 deny）。
+  - 抽字段 → **`grep -oE` / `grep -E -B/-A`**
+  - 去重/排序 → `scripts/sort.sh [-u] [-r] [-n] [-k <列>] [-o <文件>]`；也可直接在 `$TMPDIR` 写临时脚本
+- **多步逻辑**：优先写进 skill 内脚本；一次性编排可经入口内联：
+  `bash <S>/scripts/safe_run.sh -- sh -c 'cd <项目根> && <命令1> && <命令2>'`。
+  ⚠️ 内联脚本里**不要写 `>` / `>>` 重定向**：shell 面有硬化的 `* > *` / `* >> *` deny（防写面开洞），
+  重定向会被整条拒掉。需要落盘就让脚本自己写（`shot.sh` / `pull.sh` / `snapshot.sh` 都自带落点），
+  或用 `tee` 之外的方式（如 `grep -o … -f 文件` 不支持时改写进 `$TMPDIR` 的脚本再执行）。
+  ⚠️ 不要拼「`&&` / `;` 串联的裸命令」——那会绕过沙箱入口，落白名单兜底 deny。
 
 ## 页面快照与断言（`<S>/scripts/` — 跨平台）
 
 | 命令 | 耗时（实测中位） | 说明 |
 |---|---|---|
-| `snapshot.sh [--platform android\|ios\|ios-device\|macos] [--max 40] [--json] [--center] [--wait-stable] [--single-dump] [--no-cache]`<br>`snapshot.sh --diff [--against <json>] [--max-diff 20]`<br>`snapshot.sh --cache-payload <json> [--platform P]` | Android **5.7 s**（双 dump）；iOS 模拟器 **15.3 s**（`maestro hierarchy`）；iOS 真机 **待实测**；`--diff` 不额外加时（复用本次 dump） | 页面结构化摘要：`i\|type\|text\|id\|bounds\|clickable` + 指纹（`--center` 追加第 7 列 `cx,cy`，无中心为 `-`）。Android 走 `uiautomator dump`（默认双 dump，覆盖语义树懒激活；设备侧 `/sdcard/ui_snapshot.xml`）；**iOS 模拟器走 `maestro hierarchy --compact`**（实测 Appium pageSource 对 Flutter 恒为空树）；iOS 真机/macOS 走 Appium page source。`--json` 为断言/点击专用全量（不截断，每条含 `center`），默认摘要 text 截断 40 字符、最多 `--max` 行。**`--diff`**：输出变化清单（TAB 分隔，取代摘要）——header `# diff baseline=… fp=旧→新 nodes=M: +a -b ~c (text/pos/clickable)` + `+`/`-`/`~text`/`~pos`/`~clickable` 行（≤`--max-diff`，截断补「另有 N 项」；计数恒为截断前全量）。基线优先级 `--against` > `last_snapshot.json` > `prev_snapshot.json`；**隐式基线强制校验 `dialect`+`_meta.platform`**（不符 ⇒ 跳过且不降级读 `prev`，rc=1），显式 `--against` 跨平台只 ⚠️ 仍输出；`--diff`+`--json` 互斥（rc=2）；`--diff` 无基线时 rc=1 但**本次观测仍落缓存**（再跑一次即可看变化）。**缓存**：任一**观测成功**快照（含摘要/`--diff` 模式）落盘 `build/debug/last_snapshot.json`（含 `_meta.platform/ts`）供 `tap_snapshot.sh` 复用与 `--diff` 当基线，写前把旧 `last` 轮转为 `prev_snapshot.json`（**只作 diff 基线，不作坐标来源**）；`--no-cache` 关闭写入。**`--single-dump`**（仅 Android：只 dump 一次，省约一半时间，`assert_page --wait` 轮询自动带上；与 `--wait-stable` 互斥 rc=2；单次观测别默认开——语义树懒激活时可能空树）。**`--cache-payload <json>`**（不 dump，只把已有 `--json` 产物落盘，供 `assert_page --wait` 通过后写缓存；只允许与 `--platform` 同用，其余参数 rc=2；平台无法判定 rc=3，不猜）。退出码：`0` 成功（`--diff` 时无论有无变化）/ `1` 可重试或无可用基线 / `2` 用法错 / `3` 平台不支持 / `4` 语义树为空 |
+| `snapshot.sh [--platform android\|ios\|ios-device\|macos] [--max 40] [--json] [--center] [--wait-stable] [--single-dump] [--no-cache]`<br>`snapshot.sh --diff [--against <json>] [--max-diff 20]`<br>`snapshot.sh --cache-payload <json> [--platform P]` | Android **5.7 s**（双 dump）；iOS 模拟器 **15.3 s**（`maestro hierarchy`）；iOS 真机 **待实测**；`--diff` 不额外加时（复用本次 dump） | 页面结构化摘要：`i\|type\|text\|id\|bounds\|clickable` + 指纹（`--center` 追加第 7 列 `cx,cy`，无中心为 `-`）。Android 走 `uiautomator dump`（默认双 dump，覆盖语义树懒激活；设备侧 `/sdcard/ui_snapshot.xml`）；**iOS 模拟器走 `maestro hierarchy --compact`**（实测 Appium pageSource 对 Flutter 恒为空树）；iOS 真机/macOS 走 Appium page source。`--json` 为断言/点击专用全量（不截断，每条含 `center`），默认摘要 text 截断 40 字符、最多 `--max` 行。**`--diff`**：输出变化清单（TAB 分隔，取代摘要）——header `# diff baseline=… fp=旧→新 nodes=M: +a -b ~c (text/pos/clickable)` + `+`/`-`/`~text`/`~pos`/`~clickable` 行（≤`--max-diff`，截断补「另有 N 项」；计数恒为截断前全量）。基线优先级 `--against` > `last_snapshot.json` > `prev_snapshot.json`；**隐式基线强制校验 `dialect`+`_meta.platform`**（不符 ⇒ 跳过且不降级读 `prev`，rc=1），显式 `--against` 跨平台只 ⚠️ 仍输出；`--diff`+`--json` 互斥（rc=2）；`--diff` 无基线时 rc=1 但**本次观测仍落缓存**（再跑一次即可看变化）。**缓存**：任一**观测成功**快照（含摘要/`--diff` 模式）落盘 `build/debug/last_snapshot.json`（含 `_meta.platform/ts`）供 `tap_snapshot.sh` 复用与 `--diff` 当基线，写前把旧 `last` 轮转为 `prev_snapshot.json`（**只作 diff 基线，不作坐标来源**）；`--no-cache` 关闭写入。**`--single-dump`**（仅 Android：只 dump 一次，省约一半时间，`assert_page --wait` 轮询自动带上；与 `--wait-stable` 互斥 rc=2；单次观测别默认开——语义树懒激活时可能空树）。**`--cache-payload <json>`**（不 dump，只把已有 `--json` 产物落盘，供 `assert_page --wait` 通过后写缓存；只允许与 `--platform` 同用，其余参数 rc=2；平台无法判定 rc=3，不猜）。退出码：`0` 成功（`--diff` 时无论有无变化）/ `1` 可重试或无可用基线 / `2` 用法错 / `3` 平台不支持（**沙箱内 iOS 模拟器即此情形**，见「权限纪律」）/ `4` 语义树为空 |
 | `assert_page.sh --file <断言文件> [--platform P] [--with-logs N] [--no-diff] [--wait N] [--interval S] [--single-dump]` | Android 一次性 **5.7–6.1 s**；`--wait` 每轮单 dump **实测 3.8–4.7 s**（中位 3.84 s vs 双 dump 6.08 s）；iOS 模拟器一次 poll **15–40 s**（实测 39.6 s） | 声明式断言：`has` / `has-not` / `match` / `not-match` / `count <正则> <N>`。输出一行 `✅ 3/3 PASS` 或 `❌ 1/3 FAIL` + ≤5 条差异。**失败自动附 diff**（默认开，`--no-diff` 关）：仅 rc=1 时用**产生该断言结果那轮**的 payload 与基线比对（一次性路径取 `prev`——本次快照刚把旧 `last` 轮转过去；`--wait` 路径优先 `last`，轮询期不写缓存故它就是「轮询开始前那一页」，缺失才退 `prev`），变化清单写 **stderr**（stdout 契约不变），基线缺失/不可解析/方言平台不符则静默跳过。**`--wait N`**（默认 0 = 一次性）：轮询到断言通过或超时——轮询期一律 `--no-cache` + 自动 `--single-dump`（Android），通过后经 `snapshot.sh --cache-payload` 落盘；空树（rc=4）重置连败计数继续等，快照连续 2 次失败放弃（rc=5），rc=3/2 立即透传；断言引擎自身报错（rc=2 用法错 / 5 数据不可解析）也立即透传、不重试；超时报**最后一次成功断言**结果 + `已轮询 N 次 / X.Xs`。⚠️ `--wait 0` 失败仍写 `last` 并轮转 `prev`，`--wait N` 失败/超时**不写**（两条路径下 `prev` 含义不同）。退出码：`0` 全过 / `1` 有失败或 `--wait` 超时 / `2` 用法错 / `3` 平台不可用 / `4` 语义树为空 / `5` 快照失败 |
 | `maestro/assert_batch.sh <断言文件>` | iOS 模拟器 **15.6 s**（3 条，单次 flow）；Android 未单独计时 | 多条 `has`/`has-not` 合并为**单个** YAML 单次 `flow.sh`（避免 N 次 JVM 冷启动）；`count`/`match` 无 Maestro 对应物，会明确拒绝。⚠️ 语义为**精确文本、大小写敏感**（同 `assertVisible`）；子串/忽略大小写/数量请用 `assert_page.sh` |
 | `tap_snapshot.sh "<文本>" [--id] [--index N] [--exact] [--dry-run] [--fresh] [--max-age 60] [--keep-cache] [--json] [--platform android\|macos] [--input <snapshot.json>]` | 命中缓存 **<1 s**；无缓存 ≈ 一次 `snapshot.sh` + 点击（Android 合计 ~6 s） | 用快照 `bounds` 的中心点做**坐标点击**（一次快照 → 点击）。匹配语义 = `assert_page` 的 `has`（text∪id、字面包含、忽略大小写；`--exact` 精确且大小写敏感），**是 `tap.sh --text` 的超集**（能点 `clickable=false` 的文本节点，此时打 ⚠️）。**缓存**：复用 `snapshot.sh` 落盘的 `last_snapshot.json`（TTL 默认 60 s、按 `_meta.platform` 校验；点击成功后 `last` 轮转为 `prev_snapshot.json`（只作 `snapshot.sh --diff` 的基线，**绝不**作坐标来源），`--keep-cache` 保留，`--dry-run` 不轮转，`--max-age 0` ≡ `--fresh`）。平台：`android`（`adb input tap`）/ `macos`（`click.sh`，**实验**：`AXFrame` 形态未真机实测）；`ios` ⇒ rc=3 指引 `maestro/tap.sh`，`ios-device` ⇒ rc=3 指引 `appium/driver.py find-click`，`windows` ⇒ rc=3。疑似离屏（负坐标/越界）也打 ⚠️。退出码：`0` 点击完成 / `1` 未命中或 `--index` 越界 / `2` 用法错 / `3` 平台不支持 / `4` 语义树为空 / `5` 快照失败 / `6` 无可用坐标 / `7` 点击派发失败。⚠️ **rc=0 仅表示指令已送达**（`adb input tap` 无回执），是否响应必须另用 `assert_page.sh` 判 |
@@ -129,21 +190,38 @@ metadata:
 - `install.sh`/`run.sh` 按「显式覆盖（`ANDROID_APK_PATH`/`IOS_APP_PATH`/`MACOS_APP_BUNDLE`/`WINDOWS_EXE_PATH`）> 锁文件 > 输出目录最新发现」三级解析；多候选时按设备 ABI 优先（Android）+ mtime 取最新并警告；`flutter clean` 后锁失效自动回退目录发现。
 - 运行时 ID 以产物为准：Android 从 APK 提取 package（覆盖 `applicationIdSuffix`），iOS 从 `.app/Info.plist` 读 BundleID；提取失败回退 `.debug.env` 并告警。
 
+### 埋点内测包（INTERNAL_METRICS）
+
+`<S>/scripts/ios/build_metrics.sh --pod <pod> --symbol <串> [--symbol …] [--control <串> …] [--mode profile|release] [--restore|--keep|--clear-pending|--force]`
+把「给 Pods 的 `<pod>.release.xcconfig` 临时加 `INTERNAL_METRICS` → 构建 → `strings` 判据 → 还原 →
+重编 → 判据归零」做成状态机（备份 + sha256 守卫、pending 标记、审计日志）。**只能在宿主机执行**
+（沙箱内 rc=3），且需先 `pod install` 生成 xcconfig（该文件被 Profile/Release 共用、常被 gitignore）。
+
+- **`--mode` 只接受 `profile`/`release`**：debug 走 `debug.xcconfig`，且 `#if DEBUG` 会让判据恒真 ⇒ 假阳性。
+  `--mode release` 未经实测（真机 release 包另需分发签名/描述文件），缺省用 `profile`。
+- 判据示例：`--symbol P2PCameraOverlap --control 'ThingLogSDK.startLog done'`；对照串恒应 ≥1
+  （证明 `strings` 通道没坏），`[P2PHeat]` 应恒 0。
+- 中断/失败留 `<项目根>/build/debug/metrics/pending_restore` ⇒ 下次注入被拒，先 `--restore`；
+  确认误报用 `--clear-pending`（仅当 xcconfig 已无标记）。`--keep` 只用于「故意留注入态」，必须手工收尾。
+- **`[IPC] ThingLogSDK.startLog done` 的触发条件（runbook）**：唯一调用点是导出涂鸦日志
+  （`IPCBusinessPlugin.swift` 的 `exportTuyaLogs`），入口只有「登录页长按 logo」与「初始化页按钮」
+  ⇒ **已登录态够不到**，需先退出登录再触发；别把它误判成「日志通道坏了」。
+
 ## 平台路由
 
 | 目标平台 | 脚本目录 | 结构化快照 | 能力 |
 |---|---|---|---|
 | Android 真机/模拟器 | `<S>/scripts/android/` | ✅ `snapshot.sh` | ★完整：构建/启动/日志/截图/UI 点击滑动（**Flutter 与原生工程均可用**；原生工程无 `build.sh`，见「执行约定」能力表） |
-| Android/iOS 模拟器 语义 UI | `<S>/scripts/maestro/` | —（`assert_batch.sh` 批量断言） | ★无障碍语义定位点击/断言（跨端同 YAML，无需坐标）——**限 Flutter 工程**（原生工程走 `ui.sh`/`tap.sh`） |
-| iOS 模拟器 | `<S>/scripts/ios/` | ✅（`maestro hierarchy`） | 构建/启动/日志/截图（UI 操作走 Maestro，见下） |
-| iOS 真机 | `<S>/scripts/ios/`（命令加 `--device`） | ✅（需 profile/release 包） | 构建（`build.sh --device`）/安装启动（`devicectl`）/日志（`idevicesyslog --syslog-relay`）/截图（`devicectl capture`）；等价设 `IOS_TARGET=device` |
+| Android/iOS 模拟器 语义 UI | `<S>/scripts/maestro/` | —（`assert_batch.sh` 批量断言） | ★无障碍语义定位点击/断言（跨端同 YAML，无需坐标）——**限 Flutter 工程**（原生工程走 `ui.sh`/`tap.sh`）；⚠️ **iOS 模拟器在沙箱内不可用**（rc=3，见「权限纪律」） |
+| iOS 模拟器 | `<S>/scripts/ios/` | ⚠️ 仅沙箱外（`maestro hierarchy`；沙箱内 rc=3 降级为 `shot.sh`+`logs.sh`） | 启动/安装/日志/截图（UI 操作走 Maestro，见下）；构建 `build.sh` **仅沙箱外**（嵌套 `sandbox-exec` 被拒） |
+| iOS 真机 | `<S>/scripts/ios/`（命令加 `--device`） | ✅（需 profile/release 包） | 安装启动（`devicectl`：**安装沙箱内不可用** ⇒ `run.sh --device` rc=3 并交宿主机；`process launch` 可用）/日志（`idevicesyslog --syslog-relay`）/截图（`devicectl capture`）；**构建 `build.sh --device` 只能在宿主机**（嵌套 `sandbox-exec` 被拒）；等价设 `IOS_TARGET=device` |
 | iOS 真机 语义 UI | `<S>/scripts/appium/` | ✅（Appium page source） | 语义 UI（xcuitest；需 Apple 签名/TeamID，见下）——**限 Flutter 工程** |
 | macOS desktop | `<S>/scripts/macos/` | ⚠️ 实验（Appium mac2） | 构建/启动/日志/截图/智能点击（Vision）+ Appium mac2（实验）；坐标点击可用 `tap_snapshot.sh --platform macos`（**实验**：`AXFrame` 形态未真机实测） |
 | Windows desktop | `<S>/scripts/windows/` | ❌ 退回截图 | 构建/启动/日志/截图（需在 Windows 机执行） |
 
 单元测试与平台无关：`bash <S>/scripts/test.sh [路径]`。
 脚本层回归**统一入口**（不需真机）：`bash <S>/scripts/test_all.sh`（rc `0` 全过 / `1` 有失败 / `2` 用法错）。
-默认串联三项：`test_common.sh`（.debug.env 解析 + Android 非 Flutter 支持）、`test_bg.sh -f 静态`（语法 + 多字节隐患）、`test_snapshot.sh`（快照解析 + 断言 + 点击选点/缓存 + `--diff` 变化判定 + 断言失败附 diff + `--wait` 轮询 + `--single-dump`/`--cache-payload`，296 项离线用例）；加 `--full` 额外跑 `test_bg.sh` 全量行为用例（较慢）。
+默认串联五项：`test_common.sh`（.debug.env 解析 + Android 非 Flutter 支持）、`test_bg.sh -f 静态`（语法 + 多字节隐患）、`test_snapshot.sh`（快照解析 + 断言 + 点击选点/缓存 + `--diff` 变化判定 + 断言失败附 diff + `--wait` 轮询 + `--single-dump`/`--cache-payload`，296 项离线用例）、`test_safe_run.sh`（沙箱入口负控制：凭证面/写面/出网面/fail-closed/真机通道/build profile 的 SDK 缓存（含软链解析）与 trustd，**43 项**；非 macOS 自动跳过）、`test_build_metrics.sh`（`INTERNAL_METRICS` 内测包状态机：注入/还原/pending/sha 守卫/模式沿用，**27 项**，stub 构建、非 macOS 与沙箱内跳过）；加 `--full` 额外跑 `test_bg.sh` 全量行为用例（较慢）。
 离线用例的测试钩子（正常使用不要设）：`SNAPSHOT_INPUT=<xml|csv>`（`snapshot.sh` 跳过 dump 走完整解析/写缓存路径）、`SNAPSHOT_BIN=<script>`（`assert_page.sh` / `tap_snapshot.sh` 替换取快照；`assert_page --wait` 通过后的 `--cache-payload` 落盘仍走真实脚本）。
 
 ## 长任务后台模式（bg.sh）
@@ -169,7 +247,8 @@ bash <S>/scripts/bg.sh list                              # 最近 10 个 job
    `flutter build` 全程可能只有一行 `Running Gradle task 'assembleDevDebug'...` 持续 8 分钟以上（实测 Android debug 构建 473s），期间 CPU 极低、无文件写入——这是 Gradle 依赖解析/下载的正常表现。
    **判定卡死的唯一依据是 `status` 返回 `LOST` 或进程消失**，不是「日志没动」。不要因日志静止而提前终止或降级。
 
-可包装任意脚本（`ios/build.sh`、`maestro/flow.sh <flow.yaml>`、`macos/smart_tap.sh "<kw>"` 等），job 元数据落 `build/debug/jobs/`。
+可包装任意脚本（`android/build.sh`、`maestro/flow.sh <flow.yaml>`、`macos/smart_tap.sh "<kw>"` 等），job 元数据落 `build/debug/jobs/`。
+⚠️ `ios/build.sh` **除外**：iOS 构建须在宿主机跑（沙箱内 SwiftPM 嵌套 `sandbox-exec` 被拒），见「权限纪律」。
 
 ## 修改脚本前必读
 
@@ -213,7 +292,7 @@ bash <S>/scripts/test_bg.sh -f clamp # 只跑某组
 - `build.sh --device` → `build/ios/iphoneos/*.app`（锁 `.last_ios_app_device`）
 - `run.sh --device` → `devicectl device install app` + `process launch`（输出 PID）
 - `shot.sh --device` → `devicectl device capture screenshot`（失败回退 `idevicescreenshot`）
-- `logs.sh --device [--app-only] [行数] [关键词]` → 读 `build/debug/app_device.log`（后台 `idevicesyslog --syslog-relay | grep "Runner[(\[]"` 采集；模拟器日志仍为 `app.log`，两者分文件不交叉）
+- `logs.sh --device [--app-only] [行数] [关键词]` → 读 `build/debug/app_device.log`（后台 `idevicesyslog --syslog-relay | grep "<App 进程名>("` 采集；进程名由产物 `CFBundleExecutable` 推导，`.debug.env` 的 `IOS_APP_NAME` 可覆盖，缺省回退 `Runner`；模拟器日志仍为 `app.log`，两者分文件不交叉）
 - 等价开关：`IOS_TARGET=device`；显式 UDID：`IOS_DEVICE_UDID`。**默认仍是模拟器**，`--device` 不会污染模拟器目标。
 
 **固定设备**：团队统一一个型号（如 Pixel 5 / iPhone 15），永久使用该 UDID/avd，避免每次换设备重新定位坐标。
@@ -237,6 +316,9 @@ bash <S>/scripts/test_bg.sh -f clamp # 只跑某组
 | `findtap.sh <关键词> [--max 6] [--dir down\|up] [--wait 0.4]` | **滑动查找并点击**（等价 `scroll --until`）：目标不在当前屏时自动滚动，省掉「滑一次、dump 一次」的手工循环。匹配语义与 `tap.sh --text` 一致（字面包含、忽略大小写、非正则）；命中的文本节点非 `clickable` 时按节点中心坐标兜底并**在输出中注明**。**语义树无内容时首轮立即失败**（不白滑 `--max` 屏）并给 Maestro → Vision → 坐标三级降级路径。退出码：`0`=命中并点击 / `1`=`--max` 次后仍未命中**或语义树无内容** / `2`=用法错 |
 
 ## Maestro 命令（<S>/scripts/maestro/ — Android / iOS 模拟器）
+
+> ⚠️ **沙箱内 iOS 模拟器不可用**：`safe_run.sh` 下这些脚本会直接 rc=3（XCUITest 驱动在嵌套沙箱内不可靠）。
+> 降级用 `shot.sh` + `logs.sh`；iOS 真机走 `appium/`。详见「权限纪律」。
 
 **无障碍语义定位，无需坐标**；同一 YAML 跨 Android/iOS。前置：`brew tap mobile-dev-inc/tap && brew install --formula mobile-dev-inc/tap/maestro`。
 
@@ -312,7 +394,7 @@ run.sh → settle.sh → (maestro/tap.sh "目标按钮" | findtap.sh "目标")
 
 | 命令 | 说明 |
 |---|---|
-| `build.sh [--device] [--simulator] [flutter build 参数]` | 默认模拟器（`--debug --simulator`）；`--device` ⇒ 真机（**默认 `--profile`**，debug 受 iOS 14+ JIT 限制）；模拟器透传参数自动补 `--debug`/`--simulator` |
+| `build.sh [--device] [--simulator] [flutter build 参数]` | 默认模拟器（`--debug --simulator`）；`--device` ⇒ 真机（**默认 `--profile`**，debug 受 iOS 14+ JIT 限制）；模拟器透传参数自动补 `--debug`/`--simulator`。⚠️ **只能在宿主机跑**：沙箱内 xcodebuild 的 SwiftPM 解析会嵌套 `sandbox-exec` 被拒 |
 | `run.sh [--device]` | 模拟器 simctl install+launch；真机 devicectl install+launch（输出 PID） |
 | `logs.sh [--device] [--app-only] [行数] [关键词]` | tail 日志 + 异常摘要：模拟器读 `app.log`；真机读 `app_device.log`。`--app-only` 只留 App 进程行（滤掉 Sandbox/kernel 噪声，实测 1978→575 行） |
 | `shot.sh [--device]` | 模拟器 simctl io screenshot；真机 devicectl capture（回退 idevicescreenshot） |
@@ -370,7 +452,7 @@ powershell -ExecutionPolicy Bypass -File <S>\scripts\windows\shot.ps1
 
 - **build** (主代理)：改代码、编排验证
 - **debug** (子代理)：静态根因定位，不动设备、不动代码
-- **autoDebug** (子代理)：本 skill 的真机执行层——构建/启动/UI操作/抓日志/截图/回归验证，**edit: deny**
+- **autoDebug** (子代理)：本 skill 的真机执行层——启动/UI操作/抓日志/截图/回归验证，**edit: deny**（构建：Android 可在沙箱内；**iOS 须主 agent 在宿主机跑**，见「权限纪律」）
 
 build 通过 `task(subagent_type="autoDebug", prompt="...")` 把真机操作派给 autoDebug；autoDebug 返回证据（日志摘录/截图路径/结论），build 据此改码后再派回归验证任务。
 
