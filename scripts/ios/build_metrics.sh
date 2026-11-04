@@ -17,7 +17,9 @@
 #   --symbol <串>     注入后必须出现的符号串（可多次；`--restore` 时要求计数为 0）
 #   --control <串>    对照串（可多次）：任何时刻都应 ≥1，用来证明 strings 通道没坏
 #   --mode <模式>     profile | release（默认 profile）。**不接受 debug**：debug 走 debug.xcconfig，
-#                     且 `#if DEBUG` 会让判据恒真 ⇒ 断言假阳性
+#                     且 `#if DEBUG` 会让判据恒真 ⇒ 断言假阳性。
+#                     `release` 已实测可用（2026-11-04，开发账号签名；判据 1→0 归零通过）。
+#                     注意：它产出的是**开发签名**真机包；上架/分发（`flutter build ipa`）仍需分发描述文件。
 #   --restore         只做后半段：还原 xcconfig → 重编 → 断言判据归零
 #   --clear-pending   清除 pending 标记（仅当 xcconfig 已无 INTERNAL_METRICS）；确属误报时的人工出口
 #   --keep            故意保留注入态（不自动还原）；会写 pending 标记，之后必须手工 --restore

@@ -198,7 +198,9 @@ metadata:
 （沙箱内 rc=3），且需先 `pod install` 生成 xcconfig（该文件被 Profile/Release 共用、常被 gitignore）。
 
 - **`--mode` 只接受 `profile`/`release`**：debug 走 `debug.xcconfig`，且 `#if DEBUG` 会让判据恒真 ⇒ 假阳性。
-  `--mode release` 未经实测（真机 release 包另需分发签名/描述文件），缺省用 `profile`。
+  `--mode release` 已于 2026-11-04 实测通过（开发签名；判据 1 → 0 归零）；它与 `profile` 走同一条状态机，
+  区别只是 `flutter build` 的模式参数。⚠️ 产出是**开发签名**真机包，上架/分发（`flutter build ipa`）
+  仍需分发描述文件，不在本脚本范围内。
 - 判据示例：`--symbol P2PCameraOverlap --control 'ThingLogSDK.startLog done'`；对照串恒应 ≥1
   （证明 `strings` 通道没坏），`[P2PHeat]` 应恒 0。
 - 中断/失败留 `<项目根>/build/debug/metrics/pending_restore` ⇒ 下次注入被拒，先 `--restore`；
