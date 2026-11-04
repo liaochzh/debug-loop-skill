@@ -1,6 +1,6 @@
 # debug-loop skill：settle/findtap 判据 + 文档下沉（baton）
 
-> 最后更新：2026-10-28
+> 最后更新：2026-11-04
 > 本文件 owner：`~/.config/opencode/skills/debug-loop` 这条线（**目录级软链** → `~/Projects/debug-loop-skill`，GitHub `liaochzh/debug-loop-skill`，private）。方案见 `docs/plan/20261027-debugloop-next.md`，审查见 `docs/review/debugloop-next.md` / `.r2.md`。
 
 ## 模块结构
@@ -8,7 +8,7 @@
 - 历史回滚点：`~/debug-loop-snap-20261027/`（入库前的快照；现可直接 `git revert`/`git checkout`）
 - 判据公共段：`scripts/android/_common.sh`（`MIN_DUMP_BYTES` / `SETTLE_MIN_PNG_BYTES` / `SETTLE_FRAME_ALARM` / `ui_has_semantics()`）
 - 被测对象：`scripts/android/settle.sh`、`scripts/android/findtap.sh`
-- 回归：`scripts/test_common.sh`（G1–G12，100 项）、`scripts/test_bg.sh`（215 项，约 33s）
+- 回归：`scripts/test_common.sh`（G1–G12，100 项）、`scripts/test_bg.sh`（215 项，约 33s）、`scripts/test_safe_run.sh`（43 项）、`scripts/test_build_metrics.sh`（27 项）；`scripts/test_all.sh` 串联五项
 - 文档：`SKILL.md`（371 行）+ `references/{macos-smart,appium-ios-device,maestro-flow-snippets,troubleshooting,autoDebug-task-template}.md`
 
 ## 关键约束
@@ -46,6 +46,32 @@
 ## 下一步
 - 无必做项。候选：`bundle.sh` 证据包 / MCP 化（方案 §1 明确本轮不做，须先确认需求）。
 - 若重验空树分支：按上面「复现空树场景的方法」四步走即可（约 3 分钟，Gradle 首次构建 ~60s）。
+
+## 沙箱 / 真机链路（2026-11-04）
+
+方案：`docs/plan/20261104-debug-sandbox-followups.md`；审查：`docs/review/20261104-debug-sandbox-followups.md`（结论「通过」，7 条问题全部处置）；提交：`c2cf081`（**未 push**，发布走 `publish.sh`）。
+
+### 已完成
+- **A `safe_run.sh` 软链 SDK 推导**：`--profile build` 的 Flutter SDK 缓存改为「先解析软链链再校验」；`resolve_symlink_chain()` 拒相对路径、逐跳 `cd` + `pwd -P`、10 跳上限；解析失败一律不放行且走 stderr 可观测。原 6 道校验保留。回归新增独立分组 `N13-flutter软链`（不引用 `N12_SKIP`、PATH 收窄），`test_safe_run.sh` 共 **43 项**。
+- **B `ios/run.sh --device` 顺序**：stop 旧采集 → install → 起采集 → launch（原实现先起采集再 install，`set -e` 下安装失败会留孤儿采集）。install 失败：沙箱内 `rc=3` + 宿主机指引，宿主机 `rc=1`；产物路径绝对化并显式校验。
+- **C 埋点内测包脚本化**：新增 `scripts/ios/build_metrics.sh`（`INTERNAL_METRICS` 状态机：备份 + sha256 守卫 → 注入 → 构建 → `strings` 双判据 → 还原 → 重编 → 判据归零；`--restore` / `--clear-pending` / `--keep` / `--force`；`--mode` 只接受 `profile|release`，拒绝 debug；沙箱内 `rc=3`）与 `scripts/test_build_metrics.sh`（**27 项**离线 stub 回归），接入 `test_all.sh`（五项）。
+- **D runbook**：`SKILL.md` 新增「埋点内测包（INTERNAL_METRICS）」小节；`logwatch.sh` 头注补 `startLog done` 只在导出涂鸦日志时输出、已登录态需先退出登录。
+- **真机验证（2026-11-04，profile 双轮）**：注入 → `P2PCameraOverlap = 1` / 对照 `ThingLogSDK.startLog done = 1` → 自动还原重编 → `= 0` / 对照 `= 1`；xcconfig 最终 sha `f991dfab…` == 审计 `sha_before`（逐字节还原）；`grep -c INTERNAL_METRICS` = 0；`build/debug/metrics/` 只剩 `build_metrics.log` + `ipc_business.strings.txt`（无 `pending_restore`/`.bak`/`.state`）；耗时 11:17:01 → 11:22:33（两轮构建各 ~93 s）。
+- **宿主机 `run.sh --device` 成功路径（2026-11-04 实测）**：`bash scripts/ios/run.sh --device`（cwd=项目根）rc=0 —— 停旧采集 → `devicectl install` 成功（返回 installationURL）→ 起 `idevicesyslog` 采集 → `process launch` 返回 PID 31624 且 `device info processes` 确认存活；`app_device.log` 从 0 涨到 3122 → 3796 行（5 s），`syslog.pid` 第 1/2 行为 PID + UDID。⚠️ 说明：安装失败只在**沙箱 profile 内**复现，宿主机直跑不受 `file-issue-extension` 限制。
+- 门禁：`test_safe_run.sh` 43 ✅ / `test_build_metrics.sh` 27 ✅ / `test_common.sh` 109 ✅（含新增 G13）/ `test_all.sh` 全绿 / `verify-env-guard.py --gate --quiet` rc=0。
+
+### 未完成
+- `--mode release` 未实测（只跑了 profile）。
+- 仓库仍有 10 个早前会话的 `M` 文件未提交（与本轮无关，未暂存未改动）。
+
+### 本轮新增的坑
+- **`command -v flutter` 会静默跳过断链/成环**：想验证「软链解析失败是否可观测」时，用断链或成环构造根本进不了解析器；必须用 13 跳超长链（终点可执行但超上限）。
+- **沙箱内 `devicectl install` 的根因是 `sandbox_extension_issue_file … Operation not permitted`**（`file-issue-extension` 权限面）⇒ `NSCocoaErrorDomain 257`「读不到 Info.plist」。把 bundle 先 `ditto` 到 `$TMPDIR` 同样失败（与路径/卷无关），所以**不放宽权限面**，契约固定为沙箱 `rc=3` 交宿主机。⚠️ 宿主机直跑同一条命令 rc=0 —— 别把「宿主机也装不上」当成结论。
+- **基线 sha 的测量时序**：必须在启动任何会改该文件的任务（含后台任务）**之前**同步测量；后台启动后再测，测到的是注入后的状态（本轮曾把注入后 `d32a615e…` 误当基线，真实基线 `f991dfab…`）。
+- **trap EXIT 做回滚/收尾必须先存 rc**：`rc=$?` → 收尾 → `exit "$rc"`，否则断言失败会被吞成成功；INT/TERM 用 `exit 130/143` 汇入 EXIT trap。
+
+### 沙箱内已知不可用（会反复踩）
+`pgrep` / `ps`、`xctrace list devices`、`flutter build ios`、`devicectl install`。白名单只放行两条 `safe_run.sh` 绝对路径；`bash -c '…'` 可执行多步，`cd X && …` 复合命令会被拒（用 shell 的 `workdir`）。`safe_run.sh` 尾部 `"$SBD" … ; exit $?` ⇒ 被包命令 rc 原样透传。
 
 ## 发布（推送到 GitHub）
 - 本机权限层对所有 agent 硬性 deny `git push*`（build / autoDebug / commit 档），**不要反复重试**；agent 唯一发布入口是白名单脚本：
