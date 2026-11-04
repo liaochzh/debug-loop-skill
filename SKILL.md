@@ -221,7 +221,7 @@ metadata:
 
 单元测试与平台无关：`bash <S>/scripts/test.sh [路径]`。
 脚本层回归**统一入口**（不需真机）：`bash <S>/scripts/test_all.sh`（rc `0` 全过 / `1` 有失败 / `2` 用法错）。
-默认串联五项：`test_common.sh`（.debug.env 解析 + Android 非 Flutter 支持）、`test_bg.sh -f 静态`（语法 + 多字节隐患）、`test_snapshot.sh`（快照解析 + 断言 + 点击选点/缓存 + `--diff` 变化判定 + 断言失败附 diff + `--wait` 轮询 + `--single-dump`/`--cache-payload`，296 项离线用例）、`test_safe_run.sh`（沙箱入口负控制：凭证面/写面/出网面/fail-closed/真机通道/build profile 的 SDK 缓存（含软链解析）与 trustd，**43 项**；非 macOS 自动跳过）、`test_build_metrics.sh`（`INTERNAL_METRICS` 内测包状态机：注入/还原/pending/sha 守卫/模式沿用，**27 项**，stub 构建、非 macOS 与沙箱内跳过）；加 `--full` 额外跑 `test_bg.sh` 全量行为用例（较慢）。
+默认串联六项：`test_common.sh`（.debug.env 解析 + Android 非 Flutter 支持）、`test_bg.sh -f 静态`（语法 + 多字节隐患）、`test_snapshot.sh`（快照解析 + 断言 + 点击选点/缓存 + `--diff` 变化判定 + 断言失败附 diff + `--wait` 轮询 + `--single-dump`/`--cache-payload`，296 项离线用例）、`test_safe_run.sh`（沙箱入口负控制：凭证面/写面/出网面/fail-closed/真机通道/build profile 的 SDK 缓存（含软链解析）与 trustd，**43 项**；非 macOS 自动跳过）、`test_build_metrics.sh`（`INTERNAL_METRICS` 内测包状态机：注入/还原/pending/sha 守卫/模式沿用，**27 项**，stub 构建、非 macOS 与沙箱内跳过）、`test_ios_common.sh`（`ios/_common.sh` 纯函数：syslog 行正则转义与头部锚定、App 可执行名四级回退，**12 项**）；加 `--full` 额外跑 `test_bg.sh` 全量行为用例（较慢）。
 离线用例的测试钩子（正常使用不要设）：`SNAPSHOT_INPUT=<xml|csv>`（`snapshot.sh` 跳过 dump 走完整解析/写缓存路径）、`SNAPSHOT_BIN=<script>`（`assert_page.sh` / `tap_snapshot.sh` 替换取快照；`assert_page --wait` 通过后的 `--cache-payload` 落盘仍走真实脚本）。
 
 ## 长任务后台模式（bg.sh）

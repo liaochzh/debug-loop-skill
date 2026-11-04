@@ -2,7 +2,7 @@
 # test_all.sh — 脚本层回归统一入口（离线，不需真机/模拟器）
 #
 # 用法:
-#   bash <S>/scripts/test_all.sh           # 默认：common + bg 静态 + snapshot + safe_run + build_metrics
+#   bash <S>/scripts/test_all.sh           # 默认：common + bg 静态 + snapshot + safe_run + build_metrics + ios_common
 #   bash <S>/scripts/test_all.sh --full    # 额外跑 bg.sh 全量（215 项，较慢）
 #   bash <S>/scripts/test_all.sh -v        # 显示各子脚本完整输出
 #
@@ -58,6 +58,9 @@ run_one "test_snapshot.sh" "$SCRIPT_DIR/test_snapshot.sh"
 run_one "test_safe_run.sh" "$SCRIPT_DIR/test_safe_run.sh"
 # 2026-11-04：埋点内测包状态机（注入/还原/pending/sha 守卫）——用 stub 构建，不碰真机构建
 run_one "test_build_metrics.sh" "$SCRIPT_DIR/test_build_metrics.sh"
+# 2026-11-04：ios/_common.sh 纯函数（syslog 行正则转义 / App 可执行名四级回退）——
+#   这两个函数被 run.sh 与 logs.sh 依赖，且历史上出现过「调用未定义函数」的悬空引用
+run_one "test_ios_common.sh" "$SCRIPT_DIR/test_ios_common.sh"
 
 if [ "$FULL" = 1 ]; then
   run_one "test_bg.sh 全量" "$SCRIPT_DIR/test_bg.sh"

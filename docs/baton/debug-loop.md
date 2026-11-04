@@ -8,7 +8,7 @@
 - 历史回滚点：`~/debug-loop-snap-20261027/`（入库前的快照；现可直接 `git revert`/`git checkout`）
 - 判据公共段：`scripts/android/_common.sh`（`MIN_DUMP_BYTES` / `SETTLE_MIN_PNG_BYTES` / `SETTLE_FRAME_ALARM` / `ui_has_semantics()`）
 - 被测对象：`scripts/android/settle.sh`、`scripts/android/findtap.sh`
-- 回归：`scripts/test_common.sh`（G1–G12，100 项）、`scripts/test_bg.sh`（215 项，约 33s）、`scripts/test_safe_run.sh`（43 项）、`scripts/test_build_metrics.sh`（27 项）；`scripts/test_all.sh` 串联五项
+- 回归：`scripts/test_common.sh`（G1–G13，112 项）、`scripts/test_bg.sh`（215 项，约 33s）、`scripts/test_safe_run.sh`（43 项）、`scripts/test_build_metrics.sh`（27 项）、`scripts/test_ios_common.sh`（12 项）；`scripts/test_all.sh` 串联六项
 - 文档：`SKILL.md`（371 行）+ `references/{macos-smart,appium-ios-device,maestro-flow-snippets,troubleshooting,autoDebug-task-template}.md`
 
 ## 关键约束
@@ -58,7 +58,7 @@
 - **D runbook**：`SKILL.md` 新增「埋点内测包（INTERNAL_METRICS）」小节；`logwatch.sh` 头注补 `startLog done` 只在导出涂鸦日志时输出、已登录态需先退出登录。
 - **真机验证（2026-11-04，profile 双轮）**：注入 → `P2PCameraOverlap = 1` / 对照 `ThingLogSDK.startLog done = 1` → 自动还原重编 → `= 0` / 对照 `= 1`；xcconfig 最终 sha `f991dfab…` == 审计 `sha_before`（逐字节还原）；`grep -c INTERNAL_METRICS` = 0；`build/debug/metrics/` 只剩 `build_metrics.log` + `ipc_business.strings.txt`（无 `pending_restore`/`.bak`/`.state`）；耗时 11:17:01 → 11:22:33（两轮构建各 ~93 s）。
 - **宿主机 `run.sh --device` 成功路径（2026-11-04 实测）**：`bash scripts/ios/run.sh --device`（cwd=项目根）rc=0 —— 停旧采集 → `devicectl install` 成功（返回 installationURL）→ 起 `idevicesyslog` 采集 → `process launch` 返回 PID 31624 且 `device info processes` 确认存活；`app_device.log` 从 0 涨到 3122 → 3796 行（5 s），`syslog.pid` 第 1/2 行为 PID + UDID。⚠️ 说明：安装失败只在**沙箱 profile 内**复现，宿主机直跑不受 `file-issue-extension` 限制。
-- 门禁：`test_safe_run.sh` 43 ✅ / `test_build_metrics.sh` 27 ✅ / `test_common.sh` 109 ✅（含新增 G13）/ `test_all.sh` 全绿 / `verify-env-guard.py --gate --quiet` rc=0。
+- 门禁：`test_safe_run.sh` 43 ✅ / `test_build_metrics.sh` 27 ✅ / `test_common.sh` 112 ✅（含新增 G13）/ `test_ios_common.sh` 12 ✅ / `test_all.sh` 全绿 / `verify-env-guard.py --gate --quiet` rc=0。
 
 ### 未完成
 - `--mode release` 未实测（只跑了 profile）。
