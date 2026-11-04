@@ -122,6 +122,36 @@ resolve_bundle_id() {
 EFFECTIVE_BUNDLE_ID="${IOS_BUNDLE_ID:-}"
 SIM_APP_PATH="build/ios/iphonesimulator/Runner.app"
 
+# App 进程名（syslog 行过滤用）。优先级：
+#   IOS_APP_NAME（.debug.env 显式覆盖） > 产物 Info.plist 的 CFBundleExecutable > .app 文件名 > Runner
+# 为什么需要：App 可执行名不一定等于 Runner（本项目为 TinoSec），硬编码会让 app_device.log 恒为空。
+# 用法：resolve_ios_app_name [app路径] [simulator|device]（路径空 ⇒ 按 target 自动发现）
+resolve_ios_app_name() {
+  local app="${1:-}" target="${2:-device}" name=""
+  if [ -n "${IOS_APP_NAME:-}" ]; then
+    printf '%s' "$IOS_APP_NAME"
+    return 0
+  fi
+  if [ -z "$app" ]; then
+    app=$(resolve_ios_app "$target" 2>/dev/null || true)
+  fi
+  if [ -n "$app" ] && [ -f "$app/Info.plist" ] && command -v /usr/libexec/PlistBuddy >/dev/null 2>&1; then
+    name=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$app/Info.plist" 2>/dev/null || true)
+  fi
+  if [ -z "$name" ] && [ -n "$app" ]; then
+    name=$(basename "$app" .app)
+  fi
+  printf '%s' "${name:-Runner}"
+}
+
+# syslog 中「本 App 进程行」的正则片段：`TinoSec(Flutter)[123]` / `TinoSec[123]` 均命中。
+# 进程名先做 ERE 元字符转义，避免自定义名（含 . + 等）污染正则。
+ios_syslog_line_re() {
+  local name="${1:-Runner}"
+  name=$(printf '%s' "$name" | sed 's/[][\\.^$*+?(){}|]/\\&/g')
+  printf '%s(\\(|\\[)' "$name"
+}
+
 # 输出已启动模拟器 UDID；无则尝试 boot 第一个可用 iPhone 并等待
 require_simulator() {
   local udid
@@ -197,6 +227,37 @@ stop_ios_syslog_capture() {
     old_pid=$(sed -n '1p' "$pid_file" 2>/dev/null || true)
     old_udid=$(sed -n '2p' "$pid_file" 2>/dev/null || true)
   fi
+  # 沙箱内：pgrep/pkill 被拒（process-info），跨沙箱 kill 也会 EPERM ⇒ 只能尽力。
+  #   ⚠️ 判活不能写成 `kill -0 … | grep -q`：调用方多带 pipefail（管道状态取 kill 的非 0）会被吞；
+  #   且 bash 内建 kill 的文案是小写 `operation not permitted` ⇒ 统一取输出再大小写不敏感匹配。
+  if [ -n "${SAFE_RUN_PROFILE:-}" ]; then
+    local alive=0 kout="" _i=0
+    if [ -n "${old_pid:-}" ]; then
+      kill "$old_pid" 2>/dev/null || true
+      # 信号投递有毫秒级延迟：紧跟 `kill -0` 会大概率命中「还没死」⇒ 先宽限轮询（最多 1s），
+      #   否则会误报「杀不掉」并往 orphan 表写已死的 pid，把人骗去宿主机 pkill。
+      while [ "$_i" -lt 5 ] && kill -0 "$old_pid" 2>/dev/null; do
+        sleep 0.2
+        _i=$((_i + 1))
+      done
+      if kill -0 "$old_pid" 2>/dev/null; then
+        alive=1
+      else
+        # `kill -0` 失败也可能是 EPERM（跨沙箱存在但无权限发信号）⇒ 只有 EPERM 才算存活
+        kout=$(kill -0 "$old_pid" 2>&1 || true)
+        case "$kout" in *[Nn]ot\ [Pp]ermitted*) alive=1 ;; esac
+      fi
+    fi
+    if [ "$alive" -eq 1 ]; then
+      echo "⚠️  沙箱内无法停止上一次日志采集（PID ${old_pid}）：日志可能出现重复行" >&2
+      echo "   彻底重置请在宿主机执行: pkill -f 'idevicesyslog --syslog-relay'" >&2
+      # 记下孤儿，便于宿主机侧清理（主 pid 文件由本次启动覆盖，故不在这里保留）
+      printf '%s\t%s\n' "$old_pid" "${old_udid:-${fallback_udid:-?}}" \
+        >> "${LOG_DIR}/syslog.orphan.txt" 2>/dev/null || true
+    fi
+    rm -f "$pid_file"
+    return 0
+  fi
   [ -n "${old_pid:-}" ] && kill "$old_pid" 2>/dev/null || true
   # 子 shell PID 杀不到孙进程（idevicesyslog/grep）⇒ 按命令行定向清理；
   # UDID 优先取 pid 文件记录（多设备时只杀自己那台），其次兜底参数。
@@ -213,6 +274,19 @@ stop_ios_syslog_capture() {
 # 采集是否仍在运行：$1 为空 ⇒ 宽匹配
 ios_syslog_capture_running() {
   local udid="${1:-}"
+  # 沙箱内 `pgrep`/`ps` 被拒（process-info）⇒ 改用 pid 文件的 `kill -0` 判活；
+  #   EPERM 说明进程存在（跨沙箱实例）⇒ 同样视为存活，避免误报「采集未运行」。
+  if [ -n "${SAFE_RUN_PROFILE:-}" ]; then
+    local pf="$LOG_DIR/syslog.pid" sp="" kout=""
+    [ -f "$pf" ] || return 1
+    sp=$(sed -n '1p' "$pf" 2>/dev/null || true)
+    case "$sp" in ''|*[!0-9]*) return 1 ;; esac
+    kill -0 "$sp" 2>/dev/null && return 0
+    # EPERM 说明进程存在（跨沙箱实例，信号被拒）⇒ 视为存活；必须避开管道 pipefail 吞状态。
+    kout=$(kill -0 "$sp" 2>&1 || true)
+    case "$kout" in *[Nn]ot\ [Pp]ermitted*) return 0 ;; esac
+    return 1
+  fi
   if [ -n "$udid" ]; then
     pgrep -f "idevicesyslog --syslog-relay -u $udid" >/dev/null 2>&1
   else

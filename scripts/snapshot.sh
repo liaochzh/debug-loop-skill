@@ -31,6 +31,10 @@
 #   0 成功（--diff 时无论有无变化；变化数看 header）/ 1 观测失败 或 无可用基线（可重试）
 #   2 用法错 / 3 平台不支持 / 4 语义树为空
 #   ⚠️ exit 4 判据由解析器钉死为「raw_nodes > 0 且过滤后 nodes == 0」；观测失败一律 exit 1。
+#   ⚠️ 沙箱内（safe_run.sh 导出的 SAFE_RUN_PROFILE 非空）iOS 模拟器走 maestro 时**有界等待**
+#      （SNAPSHOT_MAESTRO_TIMEOUT 默认 45 s，0=不限），超时/失败按 rc=3 快失败并提示降级
+#      （XCUITest 驱动在嵌套沙箱内不可靠，重试无意义；iOS 真机走 `--platform ios-device` 的 Appium）。
+#      宿主机默认 120 s（同一变量可调，0=不限），超时按 rc=1「可重试」，不判成环境不支持。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -329,7 +333,76 @@ case "$PLATFORM" in
     UDID=$(resolve_ios_sim)
     [ -n "$UDID" ] || { echo "❌ 未检测到已启动的 iOS 模拟器（xcrun simctl list devices booted）" >&2; exit 1; }
     LOCAL_XML="$LOG_DIR/maestro_hierarchy.csv"
-    if ! maestro --device "$UDID" hierarchy --compact > "$LOCAL_XML" 2>/dev/null; then
+    # 沙箱内（safe_run.sh --profile ios）XCUITest 驱动不可靠：`xcodebuild test-without-building` 能起，
+    #   但 maestro-driver ~10 s 内退出，JVM 随后**无限**轮询 127.0.0.1:22087（实测 >90 s 无输出）。
+    #   ⇒ 沙箱内默认**直接降级**（rc=3，不浪费一轮 JVM 冷启动）；`SNAPSHOT_MAESTRO_TRY=1` 才尝试，
+    #   且带默认 45 s 有界等待（`SNAPSHOT_MAESTRO_TIMEOUT` 可覆盖，0 = 不限）。
+    if [ -n "${SAFE_RUN_PROFILE:-}" ] && [ "${SNAPSHOT_MAESTRO_TRY:-0}" != "1" ]; then
+      echo "❌ 沙箱内不支持 iOS 模拟器语义快照（maestro 的 XCUITest 驱动在嵌套沙箱内不可靠：JVM 会无限轮询 127.0.0.1:22087）" >&2
+      echo "   ⇒ 降级：页面判定改用 shot.sh（截图）+ logs.sh（日志）；iOS **真机**走 --platform ios-device（Appium），不受此限制" >&2
+      echo "   需要试验时设 SNAPSHOT_MAESTRO_TRY=1（默认 45 s 有界等待，SNAPSHOT_MAESTRO_TIMEOUT 可调）" >&2
+      exit 3
+    fi
+    MAESTRO_LIMIT="${SNAPSHOT_MAESTRO_TIMEOUT:-}"
+    if [ -z "$MAESTRO_LIMIT" ]; then
+      # 沙箱内走 TRY 分支时默认 45 s；宿主机默认 120 s（防驱动冷启动卡死；`_common.sh` 的
+      #   maestro 整体超时是另一口径，勿混用）。宿主机超时按「可重试」处理（rc=1），不判死。
+      if [ -n "${SAFE_RUN_PROFILE:-}" ]; then MAESTRO_LIMIT=45; else MAESTRO_LIMIT=120; fi
+    fi
+    case "$MAESTRO_LIMIT" in
+      ''|*[!0-9]*) echo "❌ SNAPSHOT_MAESTRO_TIMEOUT 需为非负整数（秒）: $MAESTRO_LIMIT" >&2; exit 2 ;;
+    esac
+
+    # 有界执行：包装脚本以 `exec java` 收尾，故超时时要先杀子进程（java），否则会留下无限轮询的孤儿
+    maestro_dump_bounded() {
+      local _pid _ticks _max _cp
+      if [ "$MAESTRO_LIMIT" -le 0 ]; then
+        maestro --device "$UDID" hierarchy --compact > "$LOCAL_XML" 2>/dev/null
+        return $?
+      fi
+      maestro --device "$UDID" hierarchy --compact > "$LOCAL_XML" 2>/dev/null &
+      _pid=$!
+      _ticks=0
+      _max=$(( MAESTRO_LIMIT * 10 ))
+      while kill -0 "$_pid" 2>/dev/null; do
+        _ticks=$((_ticks + 1))
+        if [ "$_ticks" -ge "$_max" ]; then
+          for _cp in $(pgrep -P "$_pid" 2>/dev/null); do kill -TERM "$_cp" 2>/dev/null || true; done
+          kill -TERM "$_pid" 2>/dev/null || true
+          sleep 0.3
+          for _cp in $(pgrep -P "$_pid" 2>/dev/null); do kill -KILL "$_cp" 2>/dev/null || true; done
+          kill -KILL "$_pid" 2>/dev/null || true
+          wait "$_pid" 2>/dev/null || true
+          echo "   ⚠️ 若仍有残留驱动进程，在宿主机执行: pkill -f 'maestro.cli.AppKt'（或 pkill -f xcodebuild）" >&2
+          return 124
+        fi
+        sleep 0.1
+      done
+      wait "$_pid"
+    }
+
+    if maestro_dump_bounded; then
+      :
+    else
+      MAESTRO_RC=$?
+      if [ "$MAESTRO_RC" -eq 124 ]; then
+        # 沙箱内超时 = 已知限制（XCUITest 驱动不可用，重试无意义）；宿主机超时 = 驱动冷启动慢
+        #   或语义树过大（可重试），不能混成「环境不支持」判死。
+        if [ -n "${SAFE_RUN_PROFILE:-}" ]; then
+          echo "❌ maestro hierarchy 超时（${MAESTRO_LIMIT}s 未返回）：沙箱内 iOS 模拟器的 XCUITest 驱动不可用（已知限制）" >&2
+          echo "   ⇒ 降级：页面判定改用 shot.sh（截图）+ logs.sh（日志）；不要重复重试此路径" >&2
+          echo "   （iOS **真机**走 Appium：--platform ios-device，不受此限制）" >&2
+          exit 3
+        fi
+        echo "❌ maestro hierarchy 超时（${MAESTRO_LIMIT}s 未返回）：驱动冷启动慢或语义树过大，可重试" >&2
+        echo "   ⇒ 调大 SNAPSHOT_MAESTRO_TIMEOUT（秒，0=不限）；或先 --wait 等首帧稳定" >&2
+        exit 1
+      fi
+      if [ -n "${SAFE_RUN_PROFILE:-}" ]; then
+        echo "❌ maestro hierarchy 失败（沙箱内 iOS 模拟器驱动不稳定，属已知限制；不要重复重试）" >&2
+        echo "   ⇒ 降级：shot.sh（截图）+ logs.sh（日志）；iOS 真机走 --platform ios-device" >&2
+        exit 3
+      fi
       echo "❌ maestro hierarchy 失败（驱动/冷启动问题，可重试）" >&2
       exit 1
     fi

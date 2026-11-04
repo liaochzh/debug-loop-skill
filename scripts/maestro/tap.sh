@@ -9,6 +9,8 @@
 # 说明:
 #   - 优先用可见文本；无文本控件（Icon/图片按钮）需 App 侧 Semantics(identifier:) 后用 --id
 #   - 不自动 launchApp（保持调用前页面状态）；需要冷启动请先跑 <platform>/run.sh
+#   - 退出码: 0 成功 / 1 未命中或执行失败 / 2 用法错 /
+#             3 环境不支持（沙箱内 iOS 模拟器 ⇒ 降级 shot.sh + logs.sh；iOS 真机用 appium/tap.sh）
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,12 +23,12 @@ while [ $# -gt 0 ]; do
     --id) AS_ID=true; shift ;;
     --index) [ $# -ge 2 ] || { echo "❌ --index 缺参数值"; exit 2; }; INDEX="$2"; shift 2 ;;
     --platform|--device|--app-id) [ $# -ge 2 ] || { echo "❌ $1 缺参数值"; exit 2; }; FWD+=("$1" "$2"); shift 2 ;;
-    -*) echo "❌ 未知参数: $1"; exit 1 ;;
+    -*) echo "❌ 未知参数: $1"; exit 2 ;;
     *)  TARGET="$1"; shift ;;
   esac
 done
 
-[ -n "$TARGET" ] || { echo "❌ 用法: ./tap.sh \"<文本>\" [--id] [--index N] [--platform android|ios]"; exit 1; }
+[ -n "$TARGET" ] || { echo "❌ 用法: ./tap.sh \"<文本>\" [--id] [--index N] [--platform android|ios]"; exit 2; }
 
 yaml_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
 ESC=$(yaml_escape "$TARGET")

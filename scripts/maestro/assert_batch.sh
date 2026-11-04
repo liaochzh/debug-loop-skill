@@ -9,7 +9,7 @@
 # ⚠️ 语义差异：本命令按 Maestro `assertVisible` 的**精确文本、大小写敏感**匹配；
 #    `assert_page.sh` 的 `has` 是**子串包含、忽略大小写**。需要子串/数量断言请用 assert_page。
 #
-# 退出码: 0 全部通过 / 1 有断言失败 / 2 用法错（含不支持的断言类型）
+# 退出码: 0 全部通过 / 1 有断言失败 / 2 用法错（含不支持的断言类型）/ 3 环境不支持（沙箱内 iOS 模拟器，需降级）
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -63,14 +63,16 @@ done < "$FILE"
 
 [ "$TOTAL" -gt 0 ] || { echo "❌ 断言文件为空: $FILE"; exit 2; }
 
+# flow.sh 的 stderr 必须保留：沙箱/环境不支持时（rc=3）降级提示只在这里
+ERR="$LOG_DIR/.maestro_batch.err"
 if [ "${#FWD[@]}" -gt 0 ]; then
   set +e
-  bash "$SCRIPT_DIR/flow.sh" "$YAML" "${FWD[@]}" > /dev/null 2>&1
+  bash "$SCRIPT_DIR/flow.sh" "$YAML" "${FWD[@]}" > /dev/null 2> "$ERR"
   FLOW_RC=$?
   set -e
 else
   set +e
-  bash "$SCRIPT_DIR/flow.sh" "$YAML" > /dev/null 2>&1
+  bash "$SCRIPT_DIR/flow.sh" "$YAML" > /dev/null 2> "$ERR"
   FLOW_RC=$?
   set -e
 fi
@@ -89,10 +91,18 @@ if [ "$FLOW_RC" -eq 2 ]; then
   exit 2
 fi
 
+if [ "$FLOW_RC" -eq 3 ]; then
+  # 环境不支持（如沙箱内 iOS 模拟器）⇒ 原样透传 rc=3，并保留 flow.sh 的降级提示
+  [ -s "$ERR" ] && cat "$ERR" >&2
+  echo "❌ Maestro 不可用（flow.sh rc=3）：按上面的提示降级（shot.sh + logs.sh），不要重试或换形态试探" >&2
+  exit 3
+fi
+
 echo "❌ ${PASSED:-0}/${TOTAL} FAIL (maestro)"
 if [ -n "$FAILED_LINE" ]; then
   echo "  - $(printf '%s' "$FAILED_LINE" | sed -e 's/^[[:space:]]*//')"
 else
   echo "  - 未捕获到 FAILED 行，可能是驱动/超时问题（见 ${LOG}）"
+  [ -s "$ERR" ] && tail -5 "$ERR" >&2
 fi
 exit 1

@@ -11,7 +11,7 @@
 | `source.sh --platform macos\|ios-device [--wait N]` | 导出当前页面 page source（排查元素可否寻址）；`--wait` 等 App 首帧 |
 | `tap.sh "<selector>" --platform macos\|ios-device [--using "accessibility id"] [--app-id] [--udid] [--team-id] [--wait N]` | 语义点击 |
 | `assert.sh "<selector>" --platform macos\|ios-device [...] [--not-visible]` | 语义断言（退出码 0=成立，1=失败，3=驱动/会话错误） |
-| `flow.sh <steps.json> --platform macos\|ios-device [...]` | 单会话多步（真机每次新建会话会重启 App，多步必须走 flow） |
+| `flow.sh <steps.json> --platform macos\|ios-device [...]` | 单会话多步（**坐标/长按/退后台都走这个**；步骤类型见下） |
 | `wda_prepare.sh --team-id <T> --profile <描述文件> --wda-bundle-id <id.wda>` | 离线准备真机 WDA（无签名构建→描述文件签名→产出 xctestrun） |
 | `wda_sign.sh <Runner.app> <描述文件> ["身份"]` | 用描述文件逐层 codesign（框架→xctest→App） |
 
@@ -46,6 +46,22 @@
   此时 Appium 的 `tap` 步骤**照样返回 ok**（点在空页上）、三张截图字节完全相同 ⇒ 完全静默的空跑，
   压测「未命中」毫无意义。压测前务必先 `shot.sh --device` 看一眼是不是真 UI。
 - ⚠️ 自动签名会在设备未注册时**自动注册设备**（占用团队年度设备额度），并自动创建/更新描述文件；不触碰 App 自身签名（路线 B 不涉及）。
+
+**flow 步骤类型**（`driver.py`；坐标/长按/退后台缺一不可）：
+| 步骤 | 说明 |
+|---|---|
+| `tap` / `type` / `assert` | 语义定位（default `--using "accessibility id"`）；`assert` 失败即整轮失败 |
+| `tap_xy {x,y}` / `long_press {x,y,seconds}` | 坐标点击/长按。**图标按钮（如「按住说话」麦克风）在 Flutter 语义树里被合并进父节点，没有独立 id ⇒ 只能坐标** |
+| `hold_and_background {x,y,hold,at,seconds}` | 按住 `hold` 秒，同时在 `at` 秒时退后台 `seconds` 秒（复现「按住 → 立即退后台」竞态） |
+| `background {seconds}` / `activate {bundleId}` | 退后台 / 唤回前台（`activateApp` 不冷启动） |
+| `shot {out}` / `source` / `exec {script,args}` / `wait {seconds}` | 取证与原子动作（`exec` 可跑任意 `mobile:` 命令） |
+
+**三个实测坑（都踩过）**：
+- ❌ `mobile: pressButton {name:"home"}` 在真机上**返回成功但空操作**（截图仍在 App 内）⇒ 退后台必须用 `background`（`mobile: backgroundApp`）。
+- ❌ W3C actions 的指针状态**不跨调用保持**：单独发 `pointerUp` 会 500 `unknown error` ⇒ 「先 down 再另发命令再 up」这条路不通，只能把「按住+退后台」原子化为 `hold_and_background`。
+- ⚠️ `pressKey`/`launchApp`/`clearState` 在 debug 包上一律禁止（会冷启动）。
+
+**判据提示（Flutter + Tuya）**：`print()` 走 stdout**不进 syslog**，`idevicesyslog` 抓不到；debug 包经 `flutter run` 启动时 stdout 会进 flutter 工具日志，可 `tail -F` 镜像到 `build/debug/app_device.log` 供 `logs.sh` 读取。App 内的 `Caches/ipc_diag/ipc_diag.log` 需代码显式 `enableDiag`（本项目 `IpcDiag.enableIfCompiled()` 未被调用 ⇒ 该通道为空），不要拿它当默认证据源。
 
 **macOS（mac2）**：
 - 需为 **Xcode Helper** 开启「辅助功能」权限（`open /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Xcode/Agents/`，拖入系统设置）

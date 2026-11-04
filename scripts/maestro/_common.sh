@@ -41,13 +41,25 @@ require_maestro() {
   fi
 }
 
+# 沙箱内 iOS 模拟器：maestro 的 XCUITest 驱动起不来（JVM 无限轮询 127.0.0.1:22087）
+#   ⇒ 快失败 rc=3 并提示降级，避免每轮白等 90 s+。需要试验时设 MAESTRO_ALLOW_SANDBOX=1。
+guard_sandbox_ios() {
+  [ -z "${SAFE_RUN_PROFILE:-}" ] && return 0
+  [ "${MAESTRO_ALLOW_SANDBOX:-0}" = "1" ] && return 0
+  echo "❌ 沙箱内不支持 iOS 模拟器 Maestro（XCUITest 驱动在嵌套沙箱内不可靠，会无限轮询 127.0.0.1:22087）" >&2
+  echo "   ⇒ 降级：页面判定改用 shot.sh（截图）+ logs.sh（日志）；iOS **真机**走 appium/driver.py（--platform ios-device）" >&2
+  echo "   需要试验时设 MAESTRO_ALLOW_SANDBOX=1（可能挂起，请自加超时）" >&2
+  exit 3
+}
+
 # 探测目标平台：显式 $1 优先（须为 android|ios）；否则按在线设备自动判定
 # 输出 android / ios；都无设备则报错退出
 detect_platform() {
   local want="${1:-}"
   if [ -n "$want" ]; then
     case "$want" in
-      android|ios) echo "$want"; return 0 ;;
+      android) echo "$want"; return 0 ;;
+      ios)     guard_sandbox_ios; echo "ios"; return 0 ;;
       *) echo "❌ --platform 仅支持 android|ios（收到: ${want}）" >&2; exit 2 ;;
     esac
   fi
@@ -58,6 +70,7 @@ detect_platform() {
   fi
   # iOS 已启动模拟器
   if command -v xcrun >/dev/null 2>&1 && xcrun simctl list devices booted 2>/dev/null | grep -qE '[0-9A-F]{8}-'; then
+    guard_sandbox_ios
     echo "ios"
     return 0
   fi

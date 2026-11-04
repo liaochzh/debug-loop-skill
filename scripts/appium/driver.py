@@ -24,6 +24,7 @@ import argparse
 import base64
 import json
 import sys
+import threading
 import time
 import warnings
 
@@ -97,6 +98,80 @@ def click_element(server, sid, eid):
     return True
 
 
+def pointer_actions(server, sid, ticks, timeout=120):
+    payload = {"actions": [{
+        "type": "pointer", "id": "finger1",
+        "parameters": {"pointerType": "touch"},
+        "actions": ticks,
+    }]}
+    resp = _post(server.rstrip("/") + f"/session/{sid}/actions", payload, timeout=timeout)
+    if resp.status_code >= 400:
+        raise RuntimeError(f"指针动作失败 {resp.status_code}: {_error_text(resp)}")
+    return True
+
+
+def perform_pointer(server, sid, x, y, hold=0.0):
+    """单指坐标操作：移到 (x,y) → 按下 → 停顿 hold 秒 → 抬起（一次调用内完成）。"""
+    ticks = [
+        {"type": "pointerMove", "duration": 0, "x": int(x), "y": int(y), "origin": "viewport"},
+        {"type": "pointerDown", "button": 0},
+    ]
+    if hold > 0:
+        ticks.append({"type": "pause", "duration": int(hold * 1000)})
+    ticks.append({"type": "pointerUp", "button": 0})
+    return pointer_actions(server, sid, ticks, timeout=int(hold) + 60)
+
+
+def hold_and_background(server, sid, x, y, hold=4.0, at=1.5, seconds=3.0):
+    """按住指定坐标，并在按住期间把 App 退到后台（复现「按住对讲 → 立即退后台」竞态）。
+
+    为什么必须原子化：W3C actions 的指针状态**不跨调用保持**（实测单独发 pointerUp
+    会 500），所以「先 down 再另发 background」这条路走不通；改为单次 actions 按住
+    hold 秒，同时在另一线程 at 秒时下发 backgroundApp。若 driver 把两条命令串行化，
+    本函数退化为「松手后立刻退后台」——仍覆盖 forceStop 与排空窗口重叠的时序。
+    """
+    err = {}
+
+    def _bg():
+        try:
+            time.sleep(at)
+            background_app(server, sid, seconds)
+        except Exception as e:  # noqa: BLE001
+            err["e"] = e
+
+    t = threading.Thread(target=_bg, daemon=True)
+    t.start()
+    perform_pointer(server, sid, x, y, hold=hold)
+    t.join(timeout=hold + float(seconds) + 15)
+    if "e" in err:
+        raise RuntimeError(f"按住期间退后台失败: {err['e']}")
+    return True
+
+
+def background_app(server, sid, seconds=3):
+    """退后台 N 秒（mobile: backgroundApp）。
+
+    ⚠️ 不用 `mobile: pressButton home`：在 iOS 真机 + 新版 XCUITest driver 上下发成功但空操作
+    （实测截图仍在 App 内），会静默把「退后台回归」跑成假通过。
+    ⚠️ 也不要用 devicectl/launchApp 冷启动 debug 包：会命中 iOS 14+ 限制页。
+    """
+    return execute_sync(server, sid, "mobile: backgroundApp", {"seconds": int(seconds)})
+
+
+def activate_app(server, sid, bundle_id):
+    """把已在后台的 App 唤回前台（不冷启动 ⇒ 不触发 debug 限制页）。"""
+    return execute_sync(server, sid, "mobile: activateApp", {"bundleId": bundle_id})
+
+
+def press_button(server, sid, name="home"):
+    """按硬件键（mobile: pressButton）。
+
+    ⚠️ 实测 iOS 真机 + 新版 XCUITest driver 上 `home` 会**返回成功但空操作**
+    （截图仍在 App 内）⇒ 退后台请用 background_app，不要用本函数。
+    """
+    return execute_sync(server, sid, "mobile: pressButton", {"name": name})
+
+
 def get_source(server, sid):
     resp = requests.get(server.rstrip("/") + f"/session/{sid}/source", timeout=120)
     if resp.status_code >= 400:
@@ -122,6 +197,26 @@ def execute_sync(server, sid, script, args=None):
     if resp.status_code >= 400:
         raise RuntimeError(f"执行脚本失败 {resp.status_code}: {_error_text(resp)}")
     return resp.json().get("value")
+
+
+def _step_xy(step, kind):
+    """取步骤坐标。缺字段/非数字一律 RuntimeError（⇒ rc=1 步骤失败），不要冒泡成 rc=3 驱动错误。"""
+    try:
+        return int(float(step["x"])), int(float(step["y"]))
+    except KeyError as e:
+        raise RuntimeError(f"{kind} 步骤缺少坐标 {e}") from None
+    except (TypeError, ValueError):
+        raise RuntimeError(
+            f"{kind} 步骤的 x/y 不是数字: {step.get('x')!r}, {step.get('y')!r}"
+        ) from None
+
+
+def _step_num(step, key, default):
+    """取数值参数（秒 / 保持时长）；非法值同样是步骤错误（rc=1），不是驱动错误。"""
+    try:
+        return float(step.get(key, default))
+    except (TypeError, ValueError):
+        raise RuntimeError(f"步骤参数 {key} 不是数字: {step.get(key)!r}") from None
 
 
 def run_steps(server, sid, steps):
@@ -159,6 +254,29 @@ def run_steps(server, sid, steps):
                 print(src if step.get("full") else src[:4000], flush=True)
             elif kind == "wait":
                 time.sleep(float(step.get("seconds", 1)))
+            elif kind == "tap_xy":
+                _x, _y = _step_xy(step, "tap_xy")
+                perform_pointer(server, sid, _x, _y, hold=_step_num(step, "hold", 0.05))
+            elif kind == "long_press":
+                _x, _y = _step_xy(step, "long_press")
+                perform_pointer(server, sid, _x, _y, hold=_step_num(step, "seconds", 1.5))
+            elif kind == "hold_and_background":
+                _x, _y = _step_xy(step, "hold_and_background")
+                hold_and_background(
+                    server, sid, _x, _y,
+                    hold=_step_num(step, "hold", 4),
+                    at=_step_num(step, "at", 1.5),
+                    seconds=_step_num(step, "seconds", 3),
+                )
+            elif kind == "background":
+                background_app(server, sid, _step_num(step, "seconds", 3))
+            elif kind == "activate":
+                _bid = step.get("bundleId", "")
+                if not _bid:
+                    raise RuntimeError("activate 步骤缺少 bundleId")
+                activate_app(server, sid, _bid)
+            elif kind == "home":
+                press_button(server, sid, step.get("name", "home"))
             else:
                 raise RuntimeError(f"未知步骤类型: {kind!r}")
             print(f"✅ step {idx} [{kind}] ok", flush=True)

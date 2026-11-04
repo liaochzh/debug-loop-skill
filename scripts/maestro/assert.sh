@@ -6,7 +6,9 @@
 #   ./assert.sh "<id>"  --id    [同上]
 #   ./assert.sh "<文本>" --not-visible   # 断言不可见
 #
-# 退出码: 0 = 断言成立；非 0 = 断言失败（供 agent 判定）
+# 退出码: 0 = 断言成立；1 = 断言失败；2 = 用法错；
+#         3 = 环境不支持（沙箱内 iOS 模拟器，XCUITest 驱动不可用）⇒ 请降级为 shot.sh + logs.sh，
+#             不要当成「断言不成立」重试（宿主机 iOS 真机走 appium/assert.sh）
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,12 +21,12 @@ while [ $# -gt 0 ]; do
     --id) AS_ID=true; shift ;;
     --not-visible) NOT_VISIBLE=true; shift ;;
     --platform|--device|--app-id) [ $# -ge 2 ] || { echo "❌ $1 缺参数值"; exit 2; }; FWD+=("$1" "$2"); shift 2 ;;
-    -*) echo "❌ 未知参数: $1"; exit 1 ;;
+    -*) echo "❌ 未知参数: $1"; exit 2 ;;
     *)  TARGET="$1"; shift ;;
   esac
 done
 
-[ -n "$TARGET" ] || { echo "❌ 用法: ./assert.sh \"<文本>\" [--id] [--not-visible] [--platform android|ios]"; exit 1; }
+[ -n "$TARGET" ] || { echo "❌ 用法: ./assert.sh \"<文本>\" [--id] [--not-visible] [--platform android|ios]"; exit 2; }
 
 yaml_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
 ESC=$(yaml_escape "$TARGET")

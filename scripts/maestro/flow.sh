@@ -8,6 +8,8 @@
 #   - <flow.yaml> 为相对路径或绝对路径；若未含 appId 头，按平台从 .debug.env 注入
 #   - 未指定 --platform 时按在线设备自动判定；--device 为空则 Maestro 自行选择
 #   - 整流程一次调用，避免逐击 CLI 的驱动启动开销
+# 退出码: 0 全部步骤通过 / 1 某步失败 / 2 用法错 /
+#         3 环境不支持（沙箱内 iOS 模拟器，XCUITest 驱动不可用；降级 shot.sh + logs.sh）
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,12 +23,12 @@ while [ $# -gt 0 ]; do
     --platform) [ $# -ge 2 ] || { echo "❌ --platform 缺参数值"; exit 2; }; PLATFORM="$2"; shift 2 ;;
     --device)   [ $# -ge 2 ] || { echo "❌ --device 缺参数值"; exit 2; };   DEVICE="$2"; DEVICE_SET=true; shift 2 ;;
     --app-id)   [ $# -ge 2 ] || { echo "❌ --app-id 缺参数值"; exit 2; };   APP_ID="$2"; shift 2 ;;
-    -*) echo "❌ 未知参数: $1"; exit 1 ;;
+    -*) echo "❌ 未知参数: $1"; exit 2 ;;
     *)  FLOW="$1"; shift ;;
   esac
 done
 
-[ -n "$FLOW" ] || { echo "❌ 用法: ./flow.sh <flow.yaml> [--platform android|ios] [--device <id>] [--app-id <id>]"; exit 1; }
+[ -n "$FLOW" ] || { echo "❌ 用法: ./flow.sh <flow.yaml> [--platform android|ios] [--device <id>] [--app-id <id>]"; exit 2; }
 # 兼容相对项目根解析
 case "$FLOW" in /*) : ;; *) FLOW="$(pwd)/$FLOW" ;; esac
 

@@ -493,6 +493,98 @@ STUB
   echo ""
 fi
 
+# ---------- G13 iOS 真机枚举回退（沙箱内 xctrace 不可用） ----------
+if run_case "G13-真机枚举回退"; then
+  G13BIN="$TMPROOT/g13bin"
+  mkdir -p "$G13BIN"
+  # 桩 1：xctrace 失败（模拟沙箱内 `No devices available`）；devicectl **结构化输出**正常
+  cat > "$G13BIN/xcrun" <<'STUB'
+#!/bin/bash
+case "$1" in
+  xctrace) exit 1 ;;
+  devicectl)
+    [ "${2:-}" = "list" ] || exit 1
+    out=""; prev=""
+    for a in "$@"; do
+      [ "$prev" = "--json-output" ] && out="$a"
+      prev="$a"
+    done
+    [ -n "$out" ] || exit 1
+    cat > "$out" <<'JSON'
+{"result": {"devices": [
+  {"identifier": "8F11B1AA-0000-0000-0000-000000000001",
+   "deviceProperties": {"name": "Demo iPhone"},
+   "hardwareProperties": {"udid": "00008101-0011A2B3C4D5E6F7", "reality": "physical", "productType": "iPhone13,2"}},
+  {"identifier": "4DC05C5E-19A8-4BA4-BA36-543BC780FC95",
+   "deviceProperties": {"name": "iPhone 17e"},
+   "hardwareProperties": {"udid": "4DC05C5E-19A8-4BA4-BA36-543BC780FC95", "reality": "simulated", "productType": "iPhone18,5"}}
+]}}
+JSON
+    exit 0 ;;
+esac
+exit 1
+STUB
+  chmod +x "$G13BIN/xcrun"
+  OUT="$(PATH="$G13BIN:$PATH" bash -c 'source "$1"; list_ios_devices' _ "$SKILL_DIR/scripts/_ios_device.sh" 2>&1)"; RC=$?
+  expect_rc          "G13 回退成功返回 0" 0 "$RC"
+  expect_contains    "G13 xctrace 失败 ⇒ 回退 devicectl --json-output（取到真机）" "Demo iPhone" "$OUT"
+  expect_contains    "G13 回退结果含 UDID" "00008101-0011A2B3C4D5E6F7" "$OUT"
+  expect_not_contains "G13 回退不混入模拟器" "4DC05C5E" "$OUT"
+
+  # 桩 2：devicectl 不支持 --json-output（老版本）⇒ 退回表格解析
+  cat > "$G13BIN/xcrun" <<'STUB'
+#!/bin/bash
+case "$1" in
+  xctrace) exit 1 ;;
+  devicectl)
+    [ "${2:-}" = "list" ] || exit 1
+    case " $* " in *" --json-output "*) exit 2 ;; esac
+    printf 'Name               Hostname   Identifier                                    State       Model          Reality\n'
+    printf -- '----------------   --------   -------------------------------------------   ---------   ------------   ---------\n'
+    printf 'Demo iPhone                00008101-0011A2B3C4D5E6F7 (UDID)              connected   iPhone 12      physical \n'
+    printf 'iPhone 17e                    4DC05C5E-19A8-4BA4-BA36-543BC780FC95 (UDID)   shutdown    iPhone 17e     simulated\n'
+    exit 0 ;;
+esac
+exit 1
+STUB
+  chmod +x "$G13BIN/xcrun"
+  OUT="$(PATH="$G13BIN:$PATH" bash -c 'source "$1"; list_ios_devices' _ "$SKILL_DIR/scripts/_ios_device.sh" 2>&1)"; RC=$?
+  expect_rc          "G13 无 --json-output 时退回表格 ⇒ rc=0" 0 "$RC"
+  expect_contains    "G13 表格兜底仍能取到真机" "00008101-0011A2B3C4D5E6F7" "$OUT"
+  expect_not_contains "G13 表格兜底不混入模拟器" "4DC05C5E" "$OUT"
+
+  # 桩 3：xctrace + devicectl 都失败 ⇒ 最后回退 idevice_id（只有 UDID）
+  cat > "$G13BIN/xcrun" <<'STUB'
+#!/bin/bash
+exit 1
+STUB
+  chmod +x "$G13BIN/xcrun"
+  cat > "$G13BIN/idevice_id" <<'STUB'
+#!/bin/bash
+echo "00008101-0011A2B3C4D5E6F7"
+STUB
+  cat > "$G13BIN/ideviceinfo" <<'STUB'
+#!/bin/bash
+echo "Demo iPhone"
+STUB
+  chmod +x "$G13BIN/idevice_id" "$G13BIN/ideviceinfo"
+  OUT="$(PATH="$G13BIN:$PATH" bash -c 'source "$1"; list_ios_devices' _ "$SKILL_DIR/scripts/_ios_device.sh" 2>&1)"; RC=$?
+  expect_rc          "G13 双失败 + idevice 可用 ⇒ rc=0" 0 "$RC"
+  expect_contains    "G13 双失败 ⇒ 回退 idevice_id（仍能拿到 UDID）" "00008101-0011A2B3C4D5E6F7" "$OUT"
+  expect_contains    "G13 idevice 回退还带设备名" "Demo iPhone" "$OUT"
+
+  # 四级全失败 ⇒ 契约：空输出 + rc=1
+  cat > "$G13BIN/idevice_id" <<'STUB'
+#!/bin/bash
+exit 1
+STUB
+  chmod +x "$G13BIN/idevice_id"
+  OUT="$(PATH="$G13BIN:$PATH" bash -c 'source "$1"; list_ios_devices' _ "$SKILL_DIR/scripts/_ios_device.sh" 2>&1)"; RC=$?
+  expect_rc          "G13 四级全失败 ⇒ rc=1（契约）" 1 "$RC"
+  expect_not_contains "G13 四级全失败 ⇒ 空输出（不编造设备）" "00008101" "$OUT"
+  echo ""
+fi
+
 # ---------- 汇总 ----------
 TOTAL=$((PASS + FAIL))
 echo "────────────────────────────────"

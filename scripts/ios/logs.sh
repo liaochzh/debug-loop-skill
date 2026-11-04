@@ -2,7 +2,7 @@
 # logs.sh — 查看 iOS 应用日志（模拟器 build/debug/app.log / 真机 app_device.log）
 # 用法: ./logs.sh [--device] [--app-only] [行数] [关键词]
 #   --device    切到真机日志（等价 IOS_TARGET=device）
-#   --app-only  只保留 App 进程行（syslog 头部的 Runner(...)[pid]），过滤 Sandbox/kernel 噪声
+#   --app-only  只保留 App 进程行（syslog 头部 `<进程名>(...)[pid]`），过滤 Sandbox/kernel 噪声
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,10 +30,13 @@ if [ ! -f "$APP_LOG" ]; then
   exit 1
 fi
 
-# 只取「进程名就是 Runner」的行：syslog 头部形如
-#   Oct 23 19:17:18 Runner(Flutter)[123] <Notice>: ...
-# kernel(Sandbox)[0] <Error>: Sandbox: Runner(123) deny(...) 虽含 "Runner(" 但不是 App 进程，被过滤。
-APP_LINE_RE='^[A-Z][a-z]{2} [ 0-9][0-9] [0-9:.]+ Runner[(\[]'
+# 只取「本 App 进程行」：syslog 头部形如
+#   Oct 23 19:17:18 TinoSec(Flutter)[123] <Notice>: ...
+# kernel(Sandbox)[0] <Error>: Sandbox: TinoSec(123) deny(...) 虽含 "TinoSec(" 但无「日期+时间」头部，
+# 正则以 ^日期 锚定，故不被误收。
+# 进程名由产物 CFBundleExecutable 推导（本项目为 TinoSec），避免硬编码 Runner 导致日志恒空。
+APP_NAME=$(resolve_ios_app_name "" "$(resolve_ios_target)")
+APP_LINE_RE="^[A-Z][a-z]{2} [ 0-9][0-9] [0-9:.]+ $(ios_syslog_line_re "$APP_NAME")"
 if [ "$APP_ONLY" = 1 ]; then
   VIEW=$(grep -E "$APP_LINE_RE" "$APP_LOG" || true)
 else
@@ -52,7 +55,7 @@ if [ -n "$FILTER" ]; then
 else
   if [ -z "$VIEW" ]; then
     if [ "$APP_ONLY" = 1 ]; then
-      echo "📭 无 App 日志（--app-only：可能尚未输出，或 App 进程名不是 Runner）"
+      echo "📭 无 App 日志（--app-only：可能尚未输出，或 App 进程名与推断值 '${APP_NAME}' 不符）"
     else
       echo "📭 无日志"
     fi

@@ -6,8 +6,12 @@
 #            [--app-id <id>] [--udid <udid>] [--team-id <TeamID>]
 #
 # 说明:
-#   - iOS 真机每次新建会话都会重启被测 App ⇒ 多步操作必须在一个会话内完成，故提供本脚本
-#   - steps.json 为步骤数组，格式见 driver.py 头部注释（tap / type / assert / exec / shot / source / wait）
+#   - 步骤在同一会话内顺序执行（浮点等待/坐标动作见 driver.py 头部注释）
+#   - 步骤类型: tap / type / assert / exec / shot / source / wait
+#                / tap_xy / long_press / hold_and_background / background / activate / home
+#   - `.debug.env` 的 IOS_ATTACH_ONLY=1 ⇒ 会话只 attach 已运行 App（forceAppLaunch=false），
+#     不会重启被测 App；冷启动 debug 包会命中 iOS 14+ 限制页
+#   - 退后台用 background 步骤（mobile: backgroundApp）；`home` 在真机上会静默空操作
 #   - 退出码: 0 全部步骤成功 / 1 某步失败 / 2 用法错误 / 3 会话或驱动错误
 set -euo pipefail
 
