@@ -1,7 +1,7 @@
 # debug-loop skill：settle/findtap 判据 + 文档下沉（baton）
 
-> 最后更新：2026-11-04
-> 本文件 owner：`~/.config/opencode/skills/debug-loop` 这条线（**目录级软链** → `~/Projects/debug-loop-skill`，GitHub `liaochzh/debug-loop-skill`，private）。方案见 `docs/plan/20261027-debugloop-next.md`，审查见 `docs/review/debugloop-next.md` / `.r2.md`。
+> 最后更新：2026-11-12
+> 本文件 owner：`~/.config/opencode/skills/debug-loop` 这条线（**目录级软链** → `~/Projects/debug-loop-skill`，GitHub `liaochzh/debug-loop-skill`，private）。方案与审查（r1「需修改」→ r2「有条件通过」）已归档：`docs/archive/2026-11-debugloop-next与iOS回退.md`（内部归档，不入库；原 `plan/20261027-debugloop-next{,.review}.md`、`review/debugloop-next{,.r2}.md`、`review/20261104-ios-sandbox-fallback-appium-pointer{,.r2}.md`）。
 
 ## 模块结构
 - skill 根：`~/.config/opencode/skills/debug-loop` → 软链到 `~/Projects/debug-loop-skill`（**2026-10-28 起是 git 仓库**，局部 `user.email=liaochzh@gmail.com`；文档已从 `~/docs/` 迁回本仓 `docs/`）
@@ -45,11 +45,12 @@
 
 ## 下一步
 - 无必做项。候选：`bundle.sh` 证据包 / MCP 化（方案 §1 明确本轮不做，须先确认需求）。
+- 输入/点击可靠性回归：见下方「输入 / 点击可靠性（2026-11-12）」段的四项真机假设；通过后再 `publish.sh`。
 - 若重验空树分支：按上面「复现空树场景的方法」四步走即可（约 3 分钟，Gradle 首次构建 ~60s）。
 
 ## 沙箱 / 真机链路（2026-11-04）
 
-方案：`docs/plan/20261104-debug-sandbox-followups.md`；审查：`docs/review/20261104-debug-sandbox-followups.md`（结论「通过」，7 条问题全部处置）；提交：`c2cf081`（A/B/C/D）；随后补提交上一会话遗留的 iOS 链路改动 `e61ed99`（真机枚举三级回退 / 沙箱降级契约 / Appium 坐标与退后台，审查见 `docs/review/20261104-ios-sandbox-fallback-appium-pointer{,.r2}.md`，第 2 轮 LGTM）。**均未 push**，发布走 `publish.sh`。
+方案与审查（结论「通过」，7 条问题全部处置）已归档：`~/docs/archive/2026-11-debug-loop沙箱与权限收尾.md` + `~/docs/archive/2026-10~11-审查轮次台账.md`；提交：`c2cf081`（A/B/C/D）；随后补提交上一会话遗留的 iOS 链路改动 `e61ed99`（真机枚举三级回退 / 沙箱降级契约 / Appium 坐标与退后台，审查见 `docs/archive/2026-11-debugloop-next与iOS回退.md`（内部归档，不入库），第 2 轮 LGTM）。**均未 push**，发布走 `publish.sh`。
 
 ### 已完成
 - **A `safe_run.sh` 软链 SDK 推导**：`--profile build` 的 Flutter SDK 缓存改为「先解析软链链再校验」；`resolve_symlink_chain()` 拒相对路径、逐跳 `cd` + `pwd -P`、10 跳上限；解析失败一律不放行且走 stderr 可观测。原 6 道校验保留。回归新增独立分组 `N13-flutter软链`（不引用 `N12_SKIP`、PATH 收窄），`test_safe_run.sh` 共 **43 项**。
@@ -74,6 +75,34 @@
 
 ### 沙箱内已知不可用（会反复踩）
 `pgrep` / `ps`、`xctrace list devices`、`flutter build ios`、`devicectl install`。白名单只放行两条 `safe_run.sh` 绝对路径；`bash -c '…'` 可执行多步，`cd X && …` 复合命令会被拒（用 shell 的 `workdir`）。`safe_run.sh` 尾部 `"$SBD" … ; exit $?` ⇒ 被包命令 rc 原样透传。
+
+## 输入 / 点击可靠性（2026-11-12）
+
+方案 `~/docs/plan/20261112-input-click-reliability.md`（v2）；审查 `~/docs/review/20261112-input-click-reliability{,.r2}.md`（r1 不通过 P0×2+P1×9+P2×9 → 修复 → r2 不通过（P1×2+P2×5）→ 修复 → 收尾只读复核「可合入（有条件）」，条件项已修）。提交 `73f89c9`（输入/点击闭环）+ `e281008`（plan 剩余项），**均未 push**，发布走 `publish.sh`。
+
+### 已完成
+- **单一判据源 `scripts/_field_target.py`**：清空次数 / 读回校验（`plan_clear`、`verify(append)`、`is_editable`、`--plan-clear`、`--id-only`、`total`）。改清空策略只改这一处。
+- **新增 `scripts/android/input.sh`（输入闭环）**：定位（`--field` 匹配 text/id 子串；`--id` 只匹配 id）→ 焦点自检（`dumpsys input_method` 三态）→ 清空（`MOVE_END` + `DEL`×(len+3)，单批 ≤64）→ 分段输入（≤20 字符/段）→ 读回校验 → 不符重试 1 次。凭据走 `--text-from .debug-login.secret`（0600，`init.sh` 生成并自动进 `.gitignore`）。rc：1 未找到 / 4 校验阶段空树 / 5 读回失败 / 6 读回不符 / 7 焦点未建立。
+- **新增 `scripts/tap_verify.sh`（点击 + 回执）**：settle → fresh 快照 → 定位 → 点击 → 断言 → **未过先判是否已生效**：`fp` 变化 ∨ 目标消失 ∨ 节点数变化 ⇒ 不再点第二次（rc=1 + diff）；仅文本集变化属弱证据（`--allow-weak` 放行）；危险词默认禁二击（`--allow-danger`）。`_tap_target` 的 rc=2/5/6 分流为 2/5/1。
+- **`scripts/appium/driver.py`**：`find-type` / flow 的 `type` 步 `clear` 缺省 **true**（唯一显式兼容性变更）；输入后读 `attribute/value` 校验；新增 `--expect`（平台会转换输入时额外断言；掩码只比长度）；`--append` 强制 `retries=0`。
+- **坑表沉淀**：`references/troubleshooting.md` C2（输入）/ C3（点击）；`references/maestro-flow-snippets.md` 片段 ③ 登录输入；`references/autoDebug-task-template.md` 新增 `<secret:KEY>` 与「点中判据」必填项；新增 `scripts/pitfall_append.sh`（项目配方 + 全局通用坑双轨）。
+- 门禁：`test_interact.sh` **104 项** rc=0（离线 adb 桩）；`test_bg.sh -f 静态` 67 脚本；`test_all.sh` 七项全绿。
+
+### 未完成（须真机确认的四项假设）
+1. `POST /element/{eid}/clear` 在 Flutter 上是否真正清空（否则靠 DEL×N 回退长度是否够）。
+2. 各 ROM `dumpsys input_method` 的 `mInputShown` 是否存在/可靠（`=true` 通过 / `=false` 阻断 / 字段缺失仅告警）。
+3. 零键码 `adb input keyevent` 的真实 rc（`input.sh` 只按 rc 判，零键码是否恒 0）。
+4. Maestro `eraseText` 粒度与 `flow.sh` 变量注入（中文不可用 `adb input text`，rc=8 改走 Maestro）。
+
+验收口径：登录 + 一次导航，**操作轮次 ≤3**（不达标即视为本轮改动未生效）。
+
+### 本轮新增的坑
+- **`printf | grep -q` 在 `pipefail` 下会 SIGPIPE 误判**：脚本内改用 `case` 或 here-string（`focus_ok` 曾因此假失败）。
+- **重试前必须重新定位**：输入后原文/占位符改变，只按关键词定位可能命中同页另一个框 ⇒ 读回假失败、并让重试按错误长度去删。无 resource-id 时用「可编辑节点唯一」兜底，宁可假 rc=6 也不能读错框。
+- **读回定位与掩码必须解耦**（`plan_field … off`）：否则 `--mask --clear-only` 会因「读到 ****」假判「已清空」。
+- **`--append` 不能重试**：重试会先清空前缀，把「追加」变成「替换」（`driver.py` 同理强制 `retries=0`）。
+- **`_field_target` 的 rc=1 是预期路径**：用 `|| echo '{}'` 兜会把 JSON 与 `{}` 拼进同一条流，下游 `json.load` 直接失败 ⇒ 候选清单静默丢失（用 `|| true`）。
+- 校验阶段空树要**重取一次**，仍空 ⇒ rc=4；混成 rc=6（读回不符）会把排障引向「IME 掉字」。
 
 ## 发布（推送到 GitHub）
 - 本机权限层对所有 agent 硬性 deny `git push*`（build / autoDebug / commit 档），**不要反复重试**；agent 唯一发布入口是白名单脚本：

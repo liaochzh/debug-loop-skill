@@ -10,3 +10,6 @@ __pycache__/
 # 在 skill 目录内直接跑过脚本时留下的后台任务现场（不属于源码）
 scripts/build/
 build/
+
+# 内部归档摘要（含本机路径），不发布
+docs/archive/

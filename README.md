@@ -63,7 +63,7 @@ scripts/vision/             Vision 视觉定位（可选，需 VISION_API_KEY）
 scripts/windows/            build logs run shot（PowerShell）
 scripts/test_common.sh      解析/注入/降级回归（无需设备）
 scripts/test_bg.sh          bg.sh 回归（无需设备）
-docs/plan/ docs/review/ docs/baton/   本 skill 的方案、审查与接力棒
+docs/baton/                 接力棒：模块级上下文（方案/审查结论已并入此处）
 ```
 
 ## 自检
@@ -73,7 +73,7 @@ bash scripts/test_common.sh    # 100 条断言，桩 adb，无设备
 bash scripts/test_bg.sh        # 215 项，临时目录构造假项目
 ```
 
-两者都**不连真机**；真机行为（判据、降级、findtap 命中）另见 `docs/plan/20261027-debugloop-next.md` §7 的实测记录。
+两者都**不连真机**；真机行为（判据、降级、findtap 命中）的实测记录与结论见 `docs/baton/debug-loop.md`。
 
 ## 依赖
 
