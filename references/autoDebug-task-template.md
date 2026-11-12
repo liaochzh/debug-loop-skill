@@ -70,9 +70,36 @@ autoDebug 早期存在「提前返回」：只执行 2~3 步就返回、或因�
           （截图默认只报路径、不 Read；确需 Read 须写明理由）；拿不到证据就写「未验证」，不得写「已修复」
 ```
 
+## 命令形态（最容易一次性废掉整轮任务的地方）
+
+autoDebug 的 shell 权限是**按命令串前缀匹配**的：`shell *` = deny，只放行
+`bash /Users/<u>/.config/opencode/skills/debug-loop/scripts/safe_run.sh *`，另外 `* > *` / `* >> *` = deny。
+所以下列写法**整轮会被 tool-level 拒绝**，子代理只会把每条记为 UNVERIFIED 返回（不会换种写法重试）：
+
+| 任务书里不要这样写 | 后果 | 正确写法 |
+|---|---|---|
+| `cd <项目根> && bash <S>/scripts/snapshot.sh …` | 串首是 `cd` ⇒ 秒拒 | 用 shell 工具的 **`workdir` 参数**；命令串只写 `bash <S>/scripts/safe_run.sh …` |
+| `ANDROID_SERIAL=x bash <S>/scripts/snapshot.sh …` | 串首是 `VAR=` ⇒ 秒拒 | `… --project-root <PR> -- env ANDROID_SERIAL=x bash <S>/scripts/snapshot.sh …` |
+| `bash <S>/scripts/… > out.log` / `>>` | `* > *` deny ⇒ 秒拒 | 不重定向：证据**内联**回报（每条 ≤5 行）；要读文件用 `read`/`grep` 工具 |
+| `bash <S>/scripts/… \| head -5` | 管道易被拒 | 用脚本自带 `--max N` 限行 |
+| `~/.config/…`、`$HOME/…`、`/Users/<u>/Projects/…`（大写 P） | 白名单是**字面量**比较 | 只用 `/Users/<u>/.config/opencode/skills/debug-loop` 这一形态 |
+
+**写法要求**：每一条命令都写成
+`bash /Users/<u>/.config/opencode/skills/debug-loop/scripts/safe_run.sh --profile ui --project-root <项目根绝对路径> -- <命令...>`。
+任务书里要把 `<S>`、`<项目根>` **展开成绝对路径字面量**，子代理不会替你展开。
+
+两个连带坑：
+
+- `maestro/*` 家族硬要求 cwd 有 `pubspec.yaml`（Flutter 门禁），非 Flutter 工程在门禁处 exit 1，
+  连 `🎭 平台: … | 设备: …` 那行都打不出来。要验「maestro 选设备」就在临时目录备一个只含
+  `pubspec.yaml` + `.debug.env` 的最小工程根（主 agent 准备，子代理没有写权限）。
+- 工作目录 ≠ 项目根：脚本按 `$PWD` 找 `.debug.env`，而 `--project-root` 只决定沙箱写面。
+  两者都给，且 `workdir` 必须等于 `--project-root`，否则脚本看不到 `.debug.env`。
+
 ## 派发前自检清单
 
-- [ ] **`.debug.env` 是否已就绪**（主 agent/人工在项目根准备好）？autoDebug 档**没有写权限**、**不能自举** ⇒ 缺失时它会直接登记阻塞返回
+- [ ] **命令形态**是否全部按 §命令形态 写（每条以 `bash <S>/scripts/safe_run.sh …` 开头、绝对路径字面量、无 `cd`/`&&`/重定向/行首 `VAR=`；`workdir` = `--project-root`）？写错一条即整轮 UNVERIFIED
+- [ ] `.debug.env` 是否已就绪（主 agent/人工在项目根准备好）？autoDebug 档**没有写权限**、**不能自举** ⇒ 缺失时它会直接登记阻塞返回
 - [ ] 是否要求先跑 `doctor.sh`（一次自检代替逐项探测），且写明「缺依赖只回报、不自行安装」
 - [ ] 若目标工程**不是 Flutter**（无 `pubspec.yaml`）：任务里是否已写明「**跳过 Maestro / Appium**（这两处仍有 Flutter 门），直接用 `android/ui.sh` · `tap.sh`」「**不跑 `build.sh`**（构建交回主 agent）」
 - [ ] 完成标准是否已写成断言（优先）或至少可机器判定；是否写明「不得仅用截图作证据」

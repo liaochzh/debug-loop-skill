@@ -151,6 +151,22 @@
 - `--clear-only` 探测阶段的空树不再折成 rc=5：`probe_hint_only` 返回 4 时透传 rc=4，并提示哨兵可能残留 1 字符。
   ⚠️ 调用点必须写成 `if fn; then rc=0; else rc=$?; fi` —— 函数体内会 `set -e`，用 `set +e; fn; rc=$?` 会静默 exit 1。
 
+### 真机 + 模拟器实测（autoDebug，2026-11-12 第三轮）
+- **多设备选择四态全 PASS**：默认（首台=真机 `ZY22GT4HNG`，bounds `[0,0][720,1600]`）；`ANDROID_SERIAL=emulator-5554`
+  ⇒ `[0,0][1080,2400]`；`=ghost-9999` 与 `='*'` ⇒ **rc=1**「不在线」且不输出任何快照行（失败关闭、无 glob 误匹配）。
+- **maestro 设备路由实测同机**：`ANDROID_SERIAL=ZY22GT4HNG` / `=emulator-5554` 分别打印
+  `🎭 平台: android | 设备: <id>` ⇒ `resolve_device` 的优先级改动真生效（真机中文 locale 令 `Tap on "Search settings"`
+  失败、flow rc=1，但设备选择判据与 flow 成败无关）。
+- **真机输入闭环未回归**：真机 Settings 搜索框（`android:id/search_src_text`，空时 text=`搜索…`）
+  `--editable-index 1 --text test123` rc=0 且读回一致；`--clear-only` rc=0 并判定「读回 `搜索…` 是占位符 hint，
+  不是残留内容」⇒ 本轮 rc=4 透传改动在真机 hint 分支上无回归；`build/debug/interact/` 明文计数 0。
+- 真机 App `com.xiaotunsmart.tonge` 目前是**已登录态**（"我的"页显示账号），登录表单的两个无 id 输入框无法复现 ⇒
+  后续真机输入回归改用 Settings 搜索框（页面上只有 1 个 editable，确定性更高）。
+- **autoDebug 派发坑（曾整轮 UNVERIFIED）**：任务书里写裸形态 `bash <S>/scripts/...` 会被权限层整轮拒绝。
+  必须写成 `bash /Users/<u>/.config/opencode/skills/debug-loop/scripts/safe_run.sh --profile ui --project-root <根> -- <cmd>`，
+  且**不能**用 `cd` / `&&` / 重定向 / 行首 `VAR=`（切目录靠 shell 工具的 `workdir`，设变量用 `--` 之后的 `env`）。
+  完整对照表见 `references/autoDebug-task-template.md` §命令形态。
+
 ## 发布（推送到 GitHub）
 - 本机权限层对所有 agent 硬性 deny `git push*`（build / autoDebug / commit 档），**不要反复重试**；agent 唯一发布入口是白名单脚本：
   ```bash
