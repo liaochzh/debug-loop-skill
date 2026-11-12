@@ -32,6 +32,21 @@ autoDebug 早期存在「提前返回」：只执行 2~3 步就返回、或因�
 > ⚠️ 若判据是日志签名，必须先在源码 `grep` 确认该字符串**真实存在**再用；
 >   禁止用方法名猜测（`play()` ≠ `play() called`）。签名写错 → 必然空等到超时。
 
+输入要求（**有输入步骤就必填**）：
+- 字段 → 值一律写成 `<secret:KEY>` 引用，**不要写明文**（会话记录/日志会留痕）：
+  `账号 = <secret:ACCOUNT>`、`密码 = <secret:PASSWORD>`（来自项目根 0600 的 `.debug-login.secret`）
+- Android：`bash <S>/scripts/android/input.sh --field 账号 --text-from .debug-login.secret --key ACCOUNT`
+  密码加 `--mask`；中文/emoji ⇒ 改 Maestro `eraseText` + `inputText`（`input.sh` 会 rc=8）
+- iOS 真机：`driver.py find-type --value 账号 --text-from … --key ACCOUNT [--mask]`
+- **禁止自行拼 `adb shell input text` / `setPasteboard`**；一条任务只用一条输入路径，失败按降级换一次即可
+- 回报里必须写「读回校验」结果：一致 / 只比长度（掩码，内容未验证）/ 读回失败
+
+点中判据（**有点击步骤就必填**）：
+- 每条点击必须写「点完看到什么」：`--expect has:<目标页文本>`，或 `--expect none`（无稳定文案时）
+- 首选 `bash <S>/scripts/tap_verify.sh <关键词> --expect has:<文本>`：一次完成点击 + 断言 + 必要重试
+- **`rc=0` 只代表事件已送达**，不得据此写「点击成功」；未达断言时按 rc=1 回报并附 diff
+- 危险操作（删除/解绑/支付/提交）**不要**给 `--allow-danger`，未说明时默认禁二击
+
 失败处理：
 - 若 <关键定位步骤> 找不到目标元素：先 `snapshot.sh` 取摘要（需要全量用 `--json`）定位失败层；仅当 exit 4（语义树为空）才 `shot.sh`，再降级 Maestro / Vision
 - 目标需要滚动才可见：用 `android/findtap.sh <关键词>`（自动滚动查找+点击），不要手工「滑一次 dump 一次」；若它首屏即返回 rc=1 且报「语义树无内容」，说明页面无语义树，**不要再滑**，按输出降级 Maestro → Vision → 坐标
@@ -62,6 +77,8 @@ autoDebug 早期存在「提前返回」：只执行 2~3 步就返回、或因�
 - [ ] **是否写明起始页面状态**（登录页 / 已登录 / 首启协议页）以及**是否允许清数据**？未写清时子代理会自行 `adb shell pm clear`，复现前提漂移
 - [ ] 等待页面就绪是否用 `android/settle.sh` 或 `adb shell sleep N`（裸 `sleep` 不在白名单，会被秒拒）
 - [ ] 步骤是否**编号、具体、可执行**（而不是「测一下登录」这种模糊描述）
+- [ ] **有输入步骤**时：字段→值是否写成 `<secret:KEY>`（无明文）？是否指明走 `input.sh` / `find-type`，并要求回报「读回校验」结果？
+- [ ] **有点击步骤**时：每条点击是否写了「点完看到什么」（`--expect has:…` / `none`）？是否说明 `rc=0 ≠ 点中`？
 - [ ] 完成标准是否**可判定**（有明确日志关键字或页面元素，而非「看起来正常」）
 - [ ] 若判据是日志签名：是否已在源码 `grep` 确认该字符串存在（防 `play() called` 这类凭空签名）
 - [ ] 预估 >60s 的命令是否已标注走 `bg.sh`，且等待方式是**短轮询**而非单次长 `wait`

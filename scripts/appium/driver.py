@@ -5,13 +5,18 @@
 #   driver.py source      --server <url> --caps <caps.json>
 #   driver.py find-click  --server <url> --caps <caps.json> [--using "accessibility id"] [--value "登录"]
 #   driver.py find-assert --server <url> --caps <caps.json> [--using ...] [--value ...]
-#   driver.py find-type   --server <url> --caps <caps.json> [--using ...] [--value ...] --text "要输入的文字"
+#   driver.py find-type   --server <url> --caps <caps.json> [--using ...] [--value ...]
+#                         (--text "要输入的文字" | --text-from <KEY=VALUE 文件|->  [--key NAME])
+#                         [--clear|--no-clear] [--mask]
+#                         ⚠️ 默认先清空再输入，输入后读回校验（不符 rc=1）；敏感值用 --text-from
 #   driver.py screenshot  --server <url> --caps <caps.json> --out <path.png>
 #   driver.py flow        --server <url> --caps <caps.json> --steps <steps.json>
 #
 # flow 的 steps.json 为步骤数组，每步 {"type": ...}：
 #   {"type":"tap","using":"...","value":"..."}            点击元素
-#   {"type":"type","using":"...","value":"...","text":"…","click":true}  点焦点+输入文字
+#   {"type":"type","using":"...","value":"...","text":"…","click":true}
+#                                                         点焦点+（默认清空）+输入+读回校验
+#                                                         "clear":false 追加；"mask":true 只比长度
 #   {"type":"assert","using":"...","value":"..."}         断言元素存在
 #   {"type":"exec","script":"mobile: setPasteboard","args":{...}}  执行 W3C 脚本/Appium mobile 命令
 #   {"type":"shot","out":"<path.png>"}                    截图
@@ -23,6 +28,7 @@
 import argparse
 import base64
 import json
+import os
 import sys
 import threading
 import time
@@ -31,6 +37,11 @@ import warnings
 warnings.filterwarnings("ignore")
 
 import requests
+
+# 输入框「清空/读回校验」判据与 android/input.sh 共用一份（scripts/_field_target.py），
+# 两处各写一份必然漂移（历史教训：settle.sh 的 PREV 自比 ⇒ 假「已静止」）。
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import _field_target as field  # noqa: E402
 
 W3C_ELEMENT_KEY = "element-6066-11e4-a52e-4f735466cecf"
 JSONWP_ELEMENT_KEY = "ELEMENT"
@@ -188,6 +199,66 @@ def send_text(server, sid, eid, text):
     return True
 
 
+def get_element_value(server, sid, eid):
+    """读元素当前值（密码框可能返回空串或掩码，调用方按长度比对）。失败返回 None。"""
+    base = server.rstrip("/") + f"/session/{sid}/element/{eid}"
+    for suffix in ("/attribute/value", "/text"):
+        try:
+            resp = requests.get(base + suffix, timeout=30)
+        except requests.exceptions.RequestException:
+            continue
+        if resp.status_code < 400:
+            val = resp.json().get("value")
+            if isinstance(val, str):
+                return val
+    return None
+
+
+def clear_element(server, sid, eid, mask=False):
+    """清空元素内容：优先 W3C element/clear；不可用时按当前值长度发退格键。
+
+    为什么不是「直接 send_text」：element/value 是**追加**语义（XCUITest typeText），
+    旧内容不清空 ⇒ 账号变成「alicealice」这类错值（2026-11-12 立项的真实故障形态）。
+
+    mask=True 时套用 plan_clear 的空值保底（密码框语义值常为空 ⇒ 否则一次都不删）。
+    """
+    base = server.rstrip("/") + f"/session/{sid}/element/{eid}"
+    try:
+        resp = _post(base + "/clear", {})
+        if resp.status_code < 400:
+            return True
+    except requests.exceptions.RequestException:
+        pass
+    current = get_element_value(server, sid, eid) or ""
+    dels, _ = field.plan_clear(current, mask)
+    if dels > 0:
+        send_text(server, sid, eid, "\ue003" * dels)   # \ue003 = W3C BACKSPACE
+    return True
+
+
+def type_into(server, sid, eid, text, clear=True, mask=False, retries=0):
+    """（清空）→ 输入 → 读回比对；不符则重来。返回 (ok, actual)。
+
+    clear=False 是「追加」语义（兼容旧行为）：此时读回是「旧值+新值」，必须只判后缀，
+    否则必然假失败并再追加一遍（2026-11-12 复审 P0#2），且**不允许重试**（会变「旧+text+text」）。
+    """
+    actual = None
+    append = not clear
+    if append:
+        retries = 0
+    for attempt in range(retries + 1):
+        if clear:
+            clear_element(server, sid, eid, mask)
+        send_text(server, sid, eid, text)
+        time.sleep(0.3)
+        actual = get_element_value(server, sid, eid)
+        if actual is not None and field.verify(text, actual, mask, append):
+            return True, actual
+        shown = None if actual is None else len(actual)
+        print(f"⚠️ 第 {attempt + 1} 次输入后读回不符（期望长度 {len(text)}，实际 {shown}）", flush=True)
+    return False, actual
+
+
 def execute_sync(server, sid, script, args=None):
     """执行 W3C 脚本（Appium mobile: 命令走这里，如 mobile: setPasteboard）。"""
     resp = _post(
@@ -235,8 +306,36 @@ def run_steps(server, sid, steps):
                     raise RuntimeError(f"未找到输入元素: {step.get('value')}")
                 if step.get("click", True):
                     click_element(server, sid, eid)
-                    time.sleep(float(step.get("click_wait", 0.5)))
-                send_text(server, sid, eid, step.get("text", ""))
+                    time.sleep(_step_num(step, "click_wait", 0.5))
+                # clear 缺省 True：`element/value` 是追加语义，不清空会把旧内容留下（兼容性变更，
+                # 还原追加行为需显式写 {"clear": false}；见 SKILL.md 的 Appium 小节）
+                _text = step.get("text", "")
+                # 空串不当作「输入成功」：清空后 verify("","") 会直接通过（凭据文件模板里
+                # ACCOUNT= / PASSWORD= 就是空值），把「什么也没输」当成功是典型假绿。
+                if _text == "" and not step.get("allow_empty", False):
+                    raise RuntimeError(
+                        f"type 步骤文本为空（元素={step.get('value')!r}）——检查凭据文件/--key；"
+                        "确需清空请显式写 {\"allow_empty\": true}"
+                    )
+                _clear = bool(step.get("clear", True))
+                _retries = int(_step_num(step, "retries", 1))
+                if _retries < 0:
+                    _retries = 0   # 负数会让 range 为空 ⇒ 一次都不输入却报「读回不符」，误导排障
+                if not _clear:
+                    # 追加语义下**不能重试**：send_text 是追加，重来一次会变成「旧+text+text」，
+                    # 而后缀校验仍然通过 ⇒ 假绿 + 内容污染（2026-11-12 复审 P1-N1）。
+                    _retries = 0
+                _ok, _actual = type_into(
+                    server, sid, eid, _text,
+                    clear=_clear,
+                    mask=bool(step.get("mask", False)),
+                    retries=_retries,
+                )
+                if not _ok:
+                    raise RuntimeError(
+                        f"输入后读回校验不符（元素={step.get('value')!r}，期望长度 {len(_text)}，"
+                        f"实际={None if _actual is None else len(_actual)}）"
+                    )
             elif kind == "assert":
                 eid = find_element(server, sid, step.get("using", "accessibility id"), step.get("value", ""))
                 if eid is None:
@@ -251,7 +350,18 @@ def run_steps(server, sid, steps):
                 print(f"  ↳ 截图: {get_screenshot(server, sid, out)}", flush=True)
             elif kind == "source":
                 src = get_source(server, sid)
-                print(src if step.get("full") else src[:4000], flush=True)
+                # ⚠️ 截断必须显式提示：静默截断会让调用方把「末尾节点不存在」误判成
+                # 「元素不在语义树」（2026-11-09 实测被坑过一次，弹层节点正落在 4000 字符之后）。
+                limit = 0 if step.get("full") else 4000
+                if limit and len(src) > limit:
+                    print(src[:limit], flush=True)
+                    print(
+                        f"⚠️ source 已截断：共 {len(src)} 字符，仅显示前 {limit}；"
+                        f'需要完整语义树请用 {{"type":"source","full":true}}',
+                        flush=True,
+                    )
+                else:
+                    print(src, flush=True)
             elif kind == "wait":
                 time.sleep(float(step.get("seconds", 1)))
             elif kind == "tap_xy":
@@ -296,6 +406,43 @@ def get_screenshot(server, sid, out):
     return out
 
 
+def _load_text_source(path, key=""):
+    """读 --text-from：KEY=VALUE 行（可用 --key 选行）或单行原文；'-' 走 stdin。
+
+    权限纪律：非 stdin 一律要求 0600（与 android/input.sh 一致），避免把密码文件
+    放进仓库时人人可读；权限不符按用法错（rc=2）处理，不静默继续。
+    """
+    if path == "-":
+        raw = sys.stdin.read()
+    else:
+        try:
+            st = os.stat(path)
+        except OSError as exc:
+            print(f"❌ --text-from 无法读取: {exc}", file=sys.stderr)
+            sys.exit(2)
+        if st.st_mode & 0o077:
+            print(f"❌ {path} 权限为 {oct(st.st_mode & 0o777)}，要求 600：chmod 600 {path}", file=sys.stderr)
+            sys.exit(2)
+        with open(path, encoding="utf-8") as fh:
+            raw = fh.read()
+    lines = [ln for ln in raw.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
+    if not lines:
+        print("❌ --text-from 内容为空", file=sys.stderr)
+        sys.exit(2)
+    if key:
+        for ln in lines:
+            if "=" in ln:
+                k, v = ln.split("=", 1)
+                if k.strip() == key:
+                    return v
+        print(f"❌ --text-from 里没有 {key}=…", file=sys.stderr)
+        sys.exit(2)
+    first = lines[0]
+    if len(lines) == 1 and "=" not in first:
+        return first
+    return first.split("=", 1)[1] if "=" in first else first
+
+
 def main():
     p = argparse.ArgumentParser(description="Appium W3C WebDriver 极简客户端")
     p.add_argument("action", choices=["source", "find-click", "find-assert", "find-type", "screenshot", "flow"])
@@ -303,7 +450,13 @@ def main():
     p.add_argument("--caps", required=True, help="capabilities JSON 文件路径")
     p.add_argument("--using", default="accessibility id")
     p.add_argument("--value", default="")
-    p.add_argument("--text", default="", help="find-type 要输入的文字")
+    p.add_argument("--text", default="", help="find-type 要输入的文字（与 --text-from 互斥）")
+    p.add_argument("--text-from", default="", help="find-type 从 KEY=VALUE 文件读（'-' = stdin；须 0600）")
+    p.add_argument("--key", default="", help="--text-from 取哪一行（缺省第一条）")
+    p.add_argument("--clear", dest="clear", action="store_true", default=True,
+                   help="find-type 先清空（默认开；旧内容不清空是登录输错的主因）")
+    p.add_argument("--no-clear", dest="clear", action="store_false", help="find-type 追加而非替换")
+    p.add_argument("--mask", action="store_true", help="find-type 掩码字段（读回只比长度）")
     p.add_argument("--steps", default="", help="flow 步骤 JSON 文件路径")
     p.add_argument("--out", default="")
     # 会话创建即触发 App 启动；Flutter 首帧/启动页期间取 source 会拿到空树
@@ -356,9 +509,20 @@ def main():
         if not args.value:
             print("--value 必填", file=sys.stderr)
             sys.exit(2)
-        if args.action == "find-type" and not args.text:
-            print("--text 必填", file=sys.stderr)
-            sys.exit(2)
+        if args.action == "find-type":
+            if args.text and args.text_from:
+                print("--text 与 --text-from 互斥", file=sys.stderr)
+                sys.exit(2)
+            if not args.text and not args.text_from:
+                print("find-type 需要 --text 或 --text-from（敏感值建议用文件，避免进会话记录）", file=sys.stderr)
+                sys.exit(2)
+            text = args.text or _load_text_source(args.text_from, args.key)
+            if text == "":
+                # 空值先拦：清空后 verify("","") 会假通过（凭据模板里 ACCOUNT= 就是空）
+                print("❌ 取到的文本为空（检查 --text-from / --key）", file=sys.stderr)
+                sys.exit(2)
+        else:
+            text = ""
         eid = find_element(args.server, sid, args.using, args.value)
         if eid is None:
             print(json.dumps({"found": False, "using": args.using, "value": args.value}, ensure_ascii=False))
@@ -369,8 +533,16 @@ def main():
         elif args.action == "find-type":
             click_element(args.server, sid, eid)
             time.sleep(0.5)
-            send_text(args.server, sid, eid, args.text)
-            print(json.dumps({"found": True, "typed": args.text, "value": args.value}, ensure_ascii=False))
+            ok, actual = type_into(args.server, sid, eid, text,
+                                   clear=args.clear, mask=args.mask, retries=1)
+            if not ok:
+                # 校验不符 → rc=1（步骤失败），与 flow 的 type 步骤同义；不要落成 3（驱动错误）
+                print(json.dumps({"found": True, "typed": False, "value": args.value,
+                                  "expect_len": len(text),
+                                  "actual_len": None if actual is None else len(actual)}, ensure_ascii=False))
+                sys.exit(1)
+            print(json.dumps({"found": True, "typed": True, "cleared": args.clear,
+                              "value": args.value, "len": len(text)}, ensure_ascii=False))
         else:
             print(json.dumps({"found": True, "value": args.value}, ensure_ascii=False))
         sys.exit(0)

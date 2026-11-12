@@ -81,6 +81,39 @@ bash <S>/scripts/assert_page.sh --file docs/test/b.txt --platform android --wait
 - 基线优先级 `--against <json>` > `last` > `prev`；隐式基线（`last`/`prev`）要求 `dialect` 与 `_meta.platform` 一致，不符 ⇒ rc=1 且**不降级**（跨平台/换方言请显式 `--against`，此时只 ⚠️ 仍输出）。
 - 无基线时 rc=1，但本次快照已落盘 ⇒ 再跑一次 `--diff` 即可看变化；`--diff` 与 `--json` 互斥（rc=2）。
 
+## 片段 ③：登录/表单输入（`eraseText` + `inputText`，唯一支持中文的输入路径）
+
+> **何时用本片段而不是 `android/input.sh`**：
+> - `input text` **只支持 ASCII 可打印字符**，中文/emoji 必然失败（`input.sh` 会直接 rc=8）；
+> - 字面 `%s` 会被 Android 当空格（框架层限制，无法转义）；
+> - IME 干预强（联想/自动补全/安全键盘）导致 `input text` 掉字，`--slow` 也压不住时。
+
+```yaml
+# login.yaml（关键三步：点 → 清 → 输；缺 eraseText 就是「旧值+新值」的经典错值）
+- tapOn:
+    text: "账号"              # 或 id: "account"
+- eraseText                   # ⚠️ 必写：清掉输入框里已有内容（默认删 1 个字符是不够的，见下）
+- inputText: "${ACCOUNT}"
+- hideKeyboard
+- tapOn:
+    text: "密码"
+- eraseText
+- inputText: "${PASSWORD}"
+- hideKeyboard
+- tapOn: "登录"
+- waitForAnimationToEnd:
+    timeout: 5000
+- assertVisible: "首页"        # 判「点中了」只能靠断言，tapOn 不返回是否命中
+```
+
+- **`eraseText` 的坑**：不带数字时 Maestro 的删除行为取决于平台/驱动版本，**不要**指望它把长密码删干净。
+  稳妥写法是先取当前值长度（`snapshot.sh --json` 或 `hierarchy`）再 `eraseText: <len+3>`；
+  拿不到长度时按 20 起步（密码常见长度），再用后面的断言兜底。
+- `inputText` 支持中文（走 IME 注入），但**目标控件必须已聚焦** ⇒ 前面必须有 `tapOn`，`hideKeyboard` 放在断言前避免遮挡。
+- 变量 `${ACCOUNT}` / `${PASSWORD}` 由 `flow.sh` 的环境变量注入；**不要把明文密码写进 YAML**，
+  从项目根 0600 的 `.debug-login.secret`（`init.sh` 生成）导出，或直接改用 `android/input.sh --text-from`。
+- 断言写在最后：`tapOn` / `inputText` **都不返回命中结果**，只有 `assertVisible` / `assert_page.sh` 才是回执。
+
 ## 失败怎么回退
 
 - 停在 `Tap on …` / `Assert …`（如 `Element not found`）⇒ **真·流程失败**：先 `snapshot.sh` 取摘要（含指纹）定位失败层，摘要为空（exit 4）才 `shot.sh`，再降级 `ui.sh` / Vision，**不得盲点**。

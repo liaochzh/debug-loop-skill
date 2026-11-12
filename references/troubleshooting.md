@@ -37,6 +37,32 @@
 | `settle.sh` 报「整屏截图始终不可用」rc=1 | screen 阶段 **screencap 一帧都没取到**（命令失败/0 字节），属「判据不可用」而非「页面在动」 | 先 `shot.sh` 验证能否截图；确认是 `screencap -p` 不被支持时改用 `maestro/assert.sh` 轮询或 `logwatch.sh <签名>`，别加大 `--timeout`（无效） |
 | 多设备抢焦点 | 脚本默认取第一台 | 只留目标设备；或 `adb -s <id>` 前先 `adb devices` 核实 |
 
+## C2. 输入框类（输错 / 没输进去 / 反复粘贴）
+
+| 现象 | 判定 | 处置 |
+|---|---|---|
+| 账号变成 `alicealice` / `旧值+新值` | `adb shell input text` 是**追加**语义，没先清空 | `android/input.sh --field 账号 --text …`（内建清空）；iOS 用 `driver.py find-type`（`clear` 默认 true） |
+| 只输进去前半截、少了几个字符 | IME 掉字 / 分段过快 | `input.sh --slow`（段间隔 0.6 s）、`--max-retry 2`；仍掉字改 Maestro `eraseText` + `inputText` |
+| 输完密码但登录失败，界面看不出来 | 没读回校验，错一两个字也走了下一步 | `--mask` 走长度校验，回报写明「内容未验证」；非密码字段必须有读回一致（`input.sh` 内建） |
+| `input.sh` rc=8 | 值里有非 ASCII（中文/emoji），`input text` 不支持 | 改 Maestro 片段 ③（`eraseText` + `inputText`）；**不要**反复重试同一条 |
+| 输入后读回为空，但界面上有值 | 密码框语义值恒空 / 只有圆点 | `--mask`；`⚠️ 内容未验证` 必须照写进结论，不要当成校验通过 |
+| 清空失败（rc=5），旧值还在 | 光标不在末尾（`MOVE_END` 未生效）/ 老 ROM 不支持批量 keyevent | `--one-key`（逐发 `KEYCODE_DEL`）；`--clear-only` 单独验证一次再输入 |
+| `input.sh` rc=7 且提示「未获得焦点」 | 点击没把焦点交给目标框（弹层/键盘遮挡/`clickable=false`），脚本**主动停在删除之前** | 先 `settle.sh` + `snapshot.sh --max 20` 复核位置，必要时收起键盘/滚动后重试；**不要**绕过自检硬发键码（会删到别的框） |
+| 反复粘贴（执行器两种输入路径都用上） | 工具选择摇摆：一边 `input text` 一边 `setPasteboard`/`inputText` | **一条任务只选一条输入路径**并写进任务书；失败按上面降级顺序换一次，不要两条路径交替试 |
+| 凭据明文出现在会话/日志里 | 用了 `--text <密码>` | 改 `--text-from .debug-login.secret --key PASSWORD`（0600，`init.sh` 已加入 `.gitignore`，输出恒 `****`） |
+
+## C3. 点击未命中类（点了没反应 / 点到了隔壁）
+
+| 现象 | 判定 | 处置 |
+|---|---|---|
+| 命令 rc=0 但页面没变 | rc=0 **只代表事件已送达**，`tap.sh`/`tap_snapshot.sh`/`findtap.sh` 都不回执 | 用 `tap_verify.sh <关键词> --expect has:<目标页文本>`（点击 + 断言一次完成）；不要凭 rc=0 写「点击成功」 |
+| 页面切换后点的还是上一个页面的位置 | `tap_snapshot.sh` 默认复用 ≤60 s 缓存坐标 | 页面切换后加 `--fresh`，或直接改用 `tap_verify.sh`（内部取 fresh 快照） |
+| 点在动画中间帧，坐标偏移 | 未等 UI 静止 | `tap_verify.sh` 内建 `settle.sh`；手工路径先 `android/settle.sh` 再定位 |
+| 目标 `clickable="false"` | Compose / RecyclerView 常见，事件落到父容器 | `findtap.sh`（文本节点中心兜底）或 `tap_verify.sh`（会在输出里标注 `clickable=false`） |
+| bounds 落在屏外 / 被键盘遮挡 | 节点存在但不可见（`offscreen=true`） | 先 `hideKeyboard`/滚动到可见区；`tap_verify.sh` 会警告，别硬点 |
+| 重试后出现重复副作用（提交两次、删两条） | 二击纪律缺失 | `tap_verify.sh` 在页面**已变化**时不再重试；危险词（删除/解绑/支付/提交…）默认禁二击，确认可再点才加 `--allow-danger` |
+| 点完准备断言，却不知道该断言什么 | 只有「页面变了」没有目标文本 | `--expect none`（主判目标节点消失/节点数变化；**仅文本集变化是弱证据**，自动刷新页会自行漂移 ⇒ 脚本打 `❌ 弱判据` 并按未通过算，确认可接受时加 `--allow-weak`）。点后快照失败判「无法判定」⇒ 不重点、rc=1 |
+
 ## D. Maestro
 
 | 现象 | 判定 | 处置 |

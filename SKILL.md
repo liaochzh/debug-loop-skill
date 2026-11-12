@@ -28,6 +28,9 @@ metadata:
    rc=0 才继续；rc=1 说明有阻塞项，按提示修复，**不要**再用 `adb devices`、`which xxx` 逐条试探。
    > 判据纪律（借 agent-device / MobileBuildMCP 的 doctor 模式）：**「命令被拒」≠「环境不可用」**。
    > 先看 doctor 的 ❌ 分级，再决定是补配置还是改路径；不要凭单条命令失败就宣布环境不可用。
+4. **先读项目台账**（存在则必读）：`docs/test/debug-loop/pitfalls.md` 是**按项目累积**的逐坑表
+   （症状 / 判据 / 处置 / 证据），命中同类症状直接照「处置」做，不要再自行摸索一遍。
+   收尾时用 `bash <S>/scripts/pitfall_append.sh --symptom … --judge … --action …` 把新坑写回（自带落点，子代理可调用）。
 
 ## 执行约定
 
@@ -42,6 +45,39 @@ metadata:
   先按提示做一次，再考虑换思路。
 - 解析优先级（由强到弱，**不得跳级**）：**语义/文本定位**（Maestro → `tap_snapshot.sh` → `ui.sh`/`findtap.sh`）＞ **Vision 视觉定位** ＞ **坐标**。
   坐标是兜底，用前必须 `shot.sh` 看过当前页；用了坐标就要在回报里写明「坐标兜底 + 已截图确认」。
+
+### 输入与点击纪律（强制）
+
+> 这两条是**真实故障复盘**得来的（2026-11-12）：账号密码「输错一两个字 / 反复粘贴 / 点了没反应」都不是模型手笨，
+> 而是缺工具与缺回执 —— 前者迫使 agent 临场拼 `adb shell input text`（不清空、漏特殊字符、掉字），
+> 后者让「点没点中」无人判定，最后把「点不中」误报成功能 Bug。
+
+**输入**（登录/搜索/表单一律走脚本，不要拼 `adb shell input text`）：
+- `bash <S>/scripts/android/input.sh --field <关键词> (--text <值>|--text-from <凭据文件>) [--mask]`
+  一次调用完成「定位 → **焦点自检** → **清空** → 分段输入 → 读回校验 → 不符重试 1 次」，rc 见命令表。
+- **必须先清空再输入**：`input text` 是追加语义，旧内容留着就会变成 `alicealice`（本项目踩过）。
+- **必须读回校验**：密码框语义值常为空或圆点 ⇒ `--mask`（只比长度），并在回报里写「内容未验证」。
+- **删除/输入前必须确认焦点已进目标框**（`input.sh` 内建 `dumpsys input_method` 自检）。焦点没进去就发
+  `KEYCODE_DEL`/文本，会作用在**上一个聚焦元素**上（删掉别人的内容），这类事故比「输错值」更难发现。
+- **敏感值走 `--text-from`**（`init.sh` 生成的 `.debug-login.secret`，权限 600、已在 `.gitignore`），
+  不要写进任务书/命令行；`--text` 只用于非敏感串。校验用快照含明文，脚本只在临时文件里用它、退出即删；
+  `build/debug/interact/*.json` 只记字段/长度，不含值。
+- **中文/emoji 不可用 `input text`**（rc=8）⇒ 改走 Maestro `eraseText` + `inputText`（见 `references/maestro-flow-snippets.md`）。
+- iOS 真机同理：`driver.py find-type --clear`（默认开）+ 读回校验；`flow` 的 `type` 步骤 `"clear"` 缺省 `true`；
+  文本为空一律 rc=2（模板里 `ACCOUNT=` 是空值，别把「什么也没输」当成功）。
+
+**点击**（每次点击都要有回执）：
+- 首选 `bash <S>/scripts/tap_verify.sh <关键词> --expect has:<目标页文本>`：一次调用完成
+  「settle → 快照 → 语义定位 → 点击 → 断言轮询 → 必要时重试一次」。
+- **页面切换后的第一次点击必须用 fresh 快照**（`tap_verify.sh` 内建；`tap_snapshot.sh` 默认复用 ≤60 s 缓存坐标，
+  页面已换仍按旧坐标点 ⇒ 典型的「点不中」）。
+- `rc=0` 只代表**事件已送达**（`tap.sh`/`tap_snapshot.sh`/`findtap.sh` 都是这个语义）；判「有没有点中」必须靠
+  `assert_page.sh --wait` 或 `tap_verify.sh`，**不得**把 rc=0 写成「点击成功」。
+- `tap_verify.sh` 重试前置判据：点击后页面**已变化**（目标节点消失 / 节点数变化）即不再点第二次；
+  其中**仅文本集变化是弱证据**（自动刷新页会自行漂移），默认按未通过算（`--allow-weak` 才放行）。
+  点后快照失败 ⇒ 判「无法判定」，同样**不重点**（fail-closed）；断言路径也不例外。危险词
+  （删除/解绑/支付/提交/确认…）默认禁二击，确认可再点时显式
+  `--allow-danger`；危险词表只是启发式，**不能当唯一防线**（危险操作前仍要按 L0/L2 确认页面）。
 
 ### 页面观测阶梯（强制）
 
@@ -171,6 +207,7 @@ metadata:
 | `snapshot.sh [--platform android\|ios\|ios-device\|macos] [--max 40] [--json] [--center] [--wait-stable] [--single-dump] [--no-cache]`<br>`snapshot.sh --diff [--against <json>] [--max-diff 20]`<br>`snapshot.sh --cache-payload <json> [--platform P]` | Android **5.7 s**（双 dump）；iOS 模拟器 **15.3 s**（`maestro hierarchy`）；iOS 真机 **待实测**；`--diff` 不额外加时（复用本次 dump） | 页面结构化摘要：`i\|type\|text\|id\|bounds\|clickable` + 指纹（`--center` 追加第 7 列 `cx,cy`，无中心为 `-`）。Android 走 `uiautomator dump`（默认双 dump，覆盖语义树懒激活；设备侧 `/sdcard/ui_snapshot.xml`）；**iOS 模拟器走 `maestro hierarchy --compact`**（实测 Appium pageSource 对 Flutter 恒为空树）；iOS 真机/macOS 走 Appium page source。`--json` 为断言/点击专用全量（不截断，每条含 `center`），默认摘要 text 截断 40 字符、最多 `--max` 行。**`--diff`**：输出变化清单（TAB 分隔，取代摘要）——header `# diff baseline=… fp=旧→新 nodes=M: +a -b ~c (text/pos/clickable)` + `+`/`-`/`~text`/`~pos`/`~clickable` 行（≤`--max-diff`，截断补「另有 N 项」；计数恒为截断前全量）。基线优先级 `--against` > `last_snapshot.json` > `prev_snapshot.json`；**隐式基线强制校验 `dialect`+`_meta.platform`**（不符 ⇒ 跳过且不降级读 `prev`，rc=1），显式 `--against` 跨平台只 ⚠️ 仍输出；`--diff`+`--json` 互斥（rc=2）；`--diff` 无基线时 rc=1 但**本次观测仍落缓存**（再跑一次即可看变化）。**缓存**：任一**观测成功**快照（含摘要/`--diff` 模式）落盘 `build/debug/last_snapshot.json`（含 `_meta.platform/ts`）供 `tap_snapshot.sh` 复用与 `--diff` 当基线，写前把旧 `last` 轮转为 `prev_snapshot.json`（**只作 diff 基线，不作坐标来源**）；`--no-cache` 关闭写入。**`--single-dump`**（仅 Android：只 dump 一次，省约一半时间，`assert_page --wait` 轮询自动带上；与 `--wait-stable` 互斥 rc=2；单次观测别默认开——语义树懒激活时可能空树）。**`--cache-payload <json>`**（不 dump，只把已有 `--json` 产物落盘，供 `assert_page --wait` 通过后写缓存；只允许与 `--platform` 同用，其余参数 rc=2；平台无法判定 rc=3，不猜）。退出码：`0` 成功（`--diff` 时无论有无变化）/ `1` 可重试或无可用基线 / `2` 用法错 / `3` 平台不支持（**沙箱内 iOS 模拟器即此情形**，见「权限纪律」）/ `4` 语义树为空 |
 | `assert_page.sh --file <断言文件> [--platform P] [--with-logs N] [--no-diff] [--wait N] [--interval S] [--single-dump]` | Android 一次性 **5.7–6.1 s**；`--wait` 每轮单 dump **实测 3.8–4.7 s**（中位 3.84 s vs 双 dump 6.08 s）；iOS 模拟器一次 poll **15–40 s**（实测 39.6 s） | 声明式断言：`has` / `has-not` / `match` / `not-match` / `count <正则> <N>`。输出一行 `✅ 3/3 PASS` 或 `❌ 1/3 FAIL` + ≤5 条差异。**失败自动附 diff**（默认开，`--no-diff` 关）：仅 rc=1 时用**产生该断言结果那轮**的 payload 与基线比对（一次性路径取 `prev`——本次快照刚把旧 `last` 轮转过去；`--wait` 路径优先 `last`，轮询期不写缓存故它就是「轮询开始前那一页」，缺失才退 `prev`），变化清单写 **stderr**（stdout 契约不变），基线缺失/不可解析/方言平台不符则静默跳过。**`--wait N`**（默认 0 = 一次性）：轮询到断言通过或超时——轮询期一律 `--no-cache` + 自动 `--single-dump`（Android），通过后经 `snapshot.sh --cache-payload` 落盘；空树（rc=4）重置连败计数继续等，快照连续 2 次失败放弃（rc=5），rc=3/2 立即透传；断言引擎自身报错（rc=2 用法错 / 5 数据不可解析）也立即透传、不重试；超时报**最后一次成功断言**结果 + `已轮询 N 次 / X.Xs`。⚠️ `--wait 0` 失败仍写 `last` 并轮转 `prev`，`--wait N` 失败/超时**不写**（两条路径下 `prev` 含义不同）。退出码：`0` 全过 / `1` 有失败或 `--wait` 超时 / `2` 用法错 / `3` 平台不可用 / `4` 语义树为空 / `5` 快照失败 |
 | `maestro/assert_batch.sh <断言文件>` | iOS 模拟器 **15.6 s**（3 条，单次 flow）；Android 未单独计时 | 多条 `has`/`has-not` 合并为**单个** YAML 单次 `flow.sh`（避免 N 次 JVM 冷启动）；`count`/`match` 无 Maestro 对应物，会明确拒绝。⚠️ 语义为**精确文本、大小写敏感**（同 `assertVisible`）；子串/忽略大小写/数量请用 `assert_page.sh` |
+| `tap_verify.sh <关键词> [--expect has:<文本>…] [--expect none] [--wait 10] [--retry 1] [--index N] [--id] [--allow-danger] [--allow-weak] [--platform android\|ios-device] [--dry-run] [--json]` | 待实测（≈ settle + 1 次快照 + `assert_page --wait` 若干轮；替代手工 3–4 轮） | **点击 + 回执**：`settle → fresh 快照 → 语义定位 → 点击 → assert 轮询`；未过时先判「页面是否已变化」，已变化**不再点第二次**（防登录/提交/删除被重复触发），危险词（删除/解绑/支付/提交/确认…）默认禁二击、`--allow-danger` 放开（**启发式，非唯一防线**）。`--expect none` 主判「目标节点消失 / 节点数变化」；**仅文本集变化属弱证据**（自动刷新页倒计时/轮播会自行漂移）⇒ 打 `❌ 弱判据` 并按未通过算，`--allow-weak` 才放行。点后快照失败/不可解析（含断言路径）⇒ 判「无法判定」，**fail-closed 不重点**。android 走 `adb input tap`；ios-device 转 `appium/tap.sh` + `appium/assert.sh`（语义点击，rc 分流：1=未找到/7=驱动失败）；`ios`/`macos`/`windows` ⇒ rc=3 指引 Maestro / smart_tap。现场落 `build/debug/interact/<ts>-tap.json`（不含明文值）。退出码：`0` 通过 / `1` 未达预期或无法判定（附 diff 与降级建议）/ `2` 用法错 / `3` 平台或环境不支持 / `4` 语义树为空 / `5` 快照失败 / `7` 派发失败 |
 | `tap_snapshot.sh "<文本>" [--id] [--index N] [--exact] [--dry-run] [--fresh] [--max-age 60] [--keep-cache] [--json] [--platform android\|macos] [--input <snapshot.json>]` | 命中缓存 **<1 s**；无缓存 ≈ 一次 `snapshot.sh` + 点击（Android 合计 ~6 s） | 用快照 `bounds` 的中心点做**坐标点击**（一次快照 → 点击）。匹配语义 = `assert_page` 的 `has`（text∪id、字面包含、忽略大小写；`--exact` 精确且大小写敏感），**是 `tap.sh --text` 的超集**（能点 `clickable=false` 的文本节点，此时打 ⚠️）。**缓存**：复用 `snapshot.sh` 落盘的 `last_snapshot.json`（TTL 默认 60 s、按 `_meta.platform` 校验；点击成功后 `last` 轮转为 `prev_snapshot.json`（只作 `snapshot.sh --diff` 的基线，**绝不**作坐标来源），`--keep-cache` 保留，`--dry-run` 不轮转，`--max-age 0` ≡ `--fresh`）。平台：`android`（`adb input tap`）/ `macos`（`click.sh`，**实验**：`AXFrame` 形态未真机实测）；`ios` ⇒ rc=3 指引 `maestro/tap.sh`，`ios-device` ⇒ rc=3 指引 `appium/driver.py find-click`，`windows` ⇒ rc=3。疑似离屏（负坐标/越界）也打 ⚠️。退出码：`0` 点击完成 / `1` 未命中或 `--index` 越界 / `2` 用法错 / `3` 平台不支持 / `4` 语义树为空 / `5` 快照失败 / `6` 无可用坐标 / `7` 点击派发失败。⚠️ **rc=0 仅表示指令已送达**（`adb input tap` 无回执），是否响应必须另用 `assert_page.sh` 判 |
 
 > 耗时口径：`see_pro` + Android 真机 R38N405KJYB + iOS 模拟器 iPhone 17e，每项 3 次取中位，已热机（不含首次 JVM/驱动冷启动）。明细见 `docs/test/20261029-assert-timing.md`。
@@ -223,7 +260,7 @@ metadata:
 
 单元测试与平台无关：`bash <S>/scripts/test.sh [路径]`。
 脚本层回归**统一入口**（不需真机）：`bash <S>/scripts/test_all.sh`（rc `0` 全过 / `1` 有失败 / `2` 用法错）。
-默认串联六项：`test_common.sh`（.debug.env 解析 + Android 非 Flutter 支持）、`test_bg.sh -f 静态`（语法 + 多字节隐患）、`test_snapshot.sh`（快照解析 + 断言 + 点击选点/缓存 + `--diff` 变化判定 + 断言失败附 diff + `--wait` 轮询 + `--single-dump`/`--cache-payload`，296 项离线用例）、`test_safe_run.sh`（沙箱入口负控制：凭证面/写面/出网面/fail-closed/真机通道/build profile 的 SDK 缓存（含软链解析）与 trustd，**43 项**；非 macOS 自动跳过）、`test_build_metrics.sh`（`INTERNAL_METRICS` 内测包状态机：注入/还原/pending/sha 守卫/模式沿用，**27 项**，stub 构建、非 macOS 与沙箱内跳过）、`test_ios_common.sh`（`ios/_common.sh` 纯函数：syslog 行正则转义与头部锚定、App 可执行名四级回退，**12 项**）；加 `--full` 额外跑 `test_bg.sh` 全量行为用例（较慢）。
+默认串联七项：`test_common.sh`（.debug.env 解析 + Android 非 Flutter 支持）、`test_bg.sh -f 静态`（语法 + 多字节隐患）、`test_snapshot.sh`（快照解析 + 断言 + 点击选点/缓存 + `--diff` 变化判定 + 断言失败附 diff + `--wait` 轮询 + `--single-dump`/`--cache-payload`，296 项离线用例）、`test_safe_run.sh`（沙箱入口负控制：凭证面/写面/出网面/fail-closed/真机通道/build profile 的 SDK 缓存（含软链解析）与 trustd，**43 项**；非 macOS 自动跳过）、`test_build_metrics.sh`（`INTERNAL_METRICS` 内测包状态机：注入/还原/pending/sha 守卫/模式沿用，**27 项**，stub 构建、非 macOS 与沙箱内跳过）、`test_ios_common.sh`（`ios/_common.sh` 纯函数：syslog 行正则转义与头部锚定、App 可执行名四级回退，**12 项**）、`test_interact.sh`（输入/点击回执/坑表：`input.sh` 逐 rc + 清空/掩码/`--append`/`--text-from`、`tap_verify.sh` 的「已变不重点」「危险词禁二击」、`pitfall_append.sh` 去重，adb 桩会在 `ui.xml` 上真改内容）；加 `--full` 额外跑 `test_bg.sh` 全量行为用例（较慢）。
 离线用例的测试钩子（正常使用不要设）：`SNAPSHOT_INPUT=<xml|csv>`（`snapshot.sh` 跳过 dump 走完整解析/写缓存路径）、`SNAPSHOT_BIN=<script>`（`assert_page.sh` / `tap_snapshot.sh` 替换取快照；`assert_page --wait` 通过后的 `--cache-payload` 落盘仍走真实脚本）。
 
 ## 长任务后台模式（bg.sh）
@@ -316,6 +353,7 @@ bash <S>/scripts/test_bg.sh -f clamp # 只跑某组
 | `swipe.sh x1 y1 x2 y2 [ms]` | 滑动 |
 | `settle.sh [--mode auto\|ui\|screen] [--timeout 25] [--interval 0.4] [--keep]` | **等 UI 静止**。默认 `--mode auto`：语义树可用则比两帧 `uiautomator dump`，**语义树无内容（0 个 text/desc 节点）或 dump 连续失败/持续不完整时自动降级整屏像素**（`screencap -p` 比对）。滑动/点击后**先 settle 再 `shot.sh`/`ui.sh`**，避免把动画中间帧当「页面错乱」。退出码：`0`=已静止（输出必带 `判据=ui\|screen`）/ `1`=超时未静止（⚠️ 文案 + 替代手段，不是异常）/ `2`=用法错 / `3`=**判定不可信**（仅 `--mode ui`：语义树无内容、dump 持续失败或不完整；本 3 ≠ `bg.sh` 的 3=LOST）。失败默认保留两帧在 `build/debug/.settle_*`，`--keep` 时成功也保留；screen 阶段一帧都取不到时终报「整屏截图始终不可用」（不谎报「未静止」） |
 | `findtap.sh <关键词> [--max 6] [--dir down\|up] [--wait 0.4]` | **滑动查找并点击**（等价 `scroll --until`）：目标不在当前屏时自动滚动，省掉「滑一次、dump 一次」的手工循环。匹配语义与 `tap.sh --text` 一致（字面包含、忽略大小写、非正则）；命中的文本节点非 `clickable` 时按节点中心坐标兜底并**在输出中注明**。**语义树无内容时首轮立即失败**（不白滑 `--max` 屏）并给 Maestro → Vision → 坐标三级降级路径。退出码：`0`=命中并点击 / `1`=`--max` 次后仍未命中**或语义树无内容** / `2`=用法错 |
+| `input.sh --field <关键词> (--text <值>\|--text-from [文件]\|--text-stdin) [--key NAME] [--mask] [--append] [--clear-only] [--index N] [--max-retry 1] [--slow] [--one-key] [--dry-run]` | **输入框闭环**：定位 → **焦点自检**（`dumpsys input_method` 的 `mInputShown=false` ⇒ rc=7 且**未删未输**，防 DEL 落到别的框；该字段在部分 ROM 缺失时只告警）→ **清空**（`MOVE_END` + `KEYCODE_DEL`×(len+3)，`--one-key` 逐发兼容老 ROM）→ 分段输入（≤20 字符/段，`--slow` 段间隔 0.6 s）→ **读回校验**（按 `bounds` 精确定位；漂移时退「关键词 + 仅可编辑节点 + 同 id/total」复定位；拿不到唯一可编辑节点就按读回失败处理）→ 不符重试一次（重试前重新定位并复检焦点；⚠️ `--append` 不自动重试——重试会清空旧内容，把追加变替换）。`--text-from` 缺省读项目根 `.debug-login.secret`（`init.sh` 生成、0600、已入 `.gitignore`），掩码/凭据来源输出恒 `****`；校验用快照写临时文件、退出即删。⚠️ `adb input text` **只支持 ASCII**（中文/emoji ⇒ rc=8 改走 Maestro `eraseText`+`inputText`）；字面 `%s` 会被当空格（框架限制）。退出码：`0` 通过 / `1` 未找到（附候选）/ `2` 用法或凭据权限错 / `3` 环境不可用 / `4` 语义树为空 / `5` 清空失败 / `6` 读回不符 / `7` 派发失败或**点击未获焦点（未做任何删除/输入）** / `8` 含非 ASCII |
 
 ## Maestro 命令（<S>/scripts/maestro/ — Android / iOS 模拟器）
 
@@ -349,20 +387,23 @@ bash <S>/scripts/test_bg.sh -f clamp # 只跑某组
 
 ### Android UI 复现循环
 ```
-run.sh → settle.sh → (maestro/tap.sh "目标按钮" | findtap.sh "目标")
-→ settle.sh → maestro/assert.sh "成功页面"（失败先 `snapshot.sh`，exit 4 才 `shot.sh`）
+run.sh → settle.sh → (tap_verify.sh "目标按钮" --expect has:<目标页文本> | trace 无回执的旧路径)
+→ 输入用 input.sh（清空+读回校验），不要再拼 adb input text
+→ settle.sh → assert_page.sh （失败先 `snapshot.sh`，exit 4 才 `shot.sh`）
 → logclear.sh → 触发目标操作 → logs.sh 分析
 → 修复后：build.sh → run.sh → 重走同一序列 → logs.sh 验证
 ```
 可复制 YAML 片段与 shell 等价序列见 `references/maestro-flow-snippets.md`（注意 `launchApp` 只用于冷启动冒烟，**复现既有页面状态时不要用**）。
 **等日志出现时用 `logwatch.sh <签名> <超时>`，不要自己拼 `adb logcat --pid=$PID` 轮询**（写死 PID 在 App 重启后会僵死成孤儿进程）。判据签名必须先在源码 `grep` 确认真实存在，勿用方法名猜测。
 **UI 操作优先级**（效率从高到低）：
-1. **Maestro**（`maestro/tap.sh` / `assert.sh`）— 语义定位，无需坐标、无需截图，首选
-2. **`tap_snapshot.sh 关键词`** — 已有 ≤60 s 快照时最快（命中缓存 <1 s），且能点 `clickable=false` 的文本节点；无缓存时 ≈ 一次 `snapshot.sh` + 点击
-3. `ui.sh` 命中 → `tap.sh --text 关键词` / `tap.sh x y`；**目标不在当前屏**时用 `findtap.sh 关键词`（自动滚动查找+点击，省掉手工「滑一次 dump 一次」）
-4. **Vision 智能命令**（语义树缺失/视觉状态判断时，见下节）
-5. 坐标点击前必须 `shot.sh` + `Read` 确认当前页（属 L2 白名单④；滑动/点击后先 `settle.sh`，避免抓到动画中间帧）
+1. **`tap_verify.sh 关键词 --expect has:<目标文本>`** — 一次调用拿到「点击 + 回执 + 必要时重试」，是现代替代首选（带断言恒强于任何无回执的旧路径）
+2. **Maestro**（`maestro/tap.sh` / `assert.sh` / `flow.sh`）— 语义定位，无需坐标、无需截图；多步/输入用 `flow.sh`（`eraseText` + `inputText`），中文输入只能走这里
+3. **`tap_snapshot.sh 关键词`** — 已有 ≤60 s 快照时最快（命中缓存 <1 s），且能点 `clickable=false` 的文本节点；无缓存时 ≈ 一次 `snapshot.sh` + 点击。⚠️ **页面切换后必须 `--fresh`**，否则按旧坐标点
+4. `ui.sh` 命中 → `tap.sh --text 关键词` / `tap.sh x y`；**目标不在当前屏**时用 `findtap.sh 关键词`（自动滚动查找+点击，省掉手工「滑一次 dump 一次」）
+5. **Vision 智能命令**（语义树缺失/视觉状态判断时，见下节）
+6. 坐标点击前必须 `shot.sh` + `Read` 确认当前页（属 L2 白名单④；滑动/点击后先 `settle.sh`，避免抓到动画中间帧）
    > 例外：**与点击同源于同一时刻语义快照**的坐标（`tap_snapshot.sh`、`snapshot.sh --center` + `tap.sh x y`）不属坐标兜底，免 `shot.sh` 前置；危险操作仍需确认（白名单⑤）。
+   > 2–4 与 6 的 rc=0 **都只表示事件已送达**：必须再用 `assert_page.sh --wait` 判「有没有点中」。
 
 **回退**：Maestro 报错 → 先 `snapshot.sh` 取摘要（含指纹）定位失败层，摘要为空（exit 4）才 `shot.sh`，再降级到 ui.sh / Vision，不得盲点。但**必须先区分「流程失败」与「被超时中断」**：
 - 看 `build/debug/maestro_output.log` 停在哪一步。停在 `Tap on …` / `Assert …` 等步骤（如 `Element not found`）→ **真·流程失败**，按上面正常回退。
@@ -389,6 +430,13 @@ run.sh → settle.sh → (maestro/tap.sh "目标按钮" | findtap.sh "目标")
 无障碍语义定位（同 Maestro 思路），Appium 3 + W3C WebDriver。命令：`doctor.sh`、`source.sh`（导出 page source 排查元素可否寻址）、`tap.sh`、`assert.sh`（0=成立，1=失败，3=驱动/会话错误）、`flow.sh`（真机多步**必须**走单会话 flow）、`wda_prepare.sh` / `wda_sign.sh`（离线准备真机 WDA）。
 ⚠️ **不可逆副作用**：路线 A 自动签名会在设备未注册时**自动注册设备**（占用团队年度设备额度）并创建/更新描述文件。iOS 真机需 `IOS_TEAM_ID`；设备上必须是 **profile/release** 包（Flutter debug 包 JIT 受限，page source 无业务元素）。
 **首次接 iOS 真机必读** `references/appium-ios-device.md`（前置、路线 A/B、xctestrun 约束、mac2 与 Flutter 桌面已知限制）。
+
+**输入纪律（2026-11-12 起）**：`driver.py find-type` 与 flow 的 `{"type":"type"}` 步骤**默认先清空再输入**，
+输入后读 `attribute/value` 校验（不符重试一次，仍不符 rc=1）。全量替换是默认语义 —— 需要追加时显式写
+`--no-clear`（CLI）或 `{"clear": false}`（步骤）；**追加语义不自动重试**（重试会变成「旧值+文本+文本」）。
+密码框加 `--mask`（只比长度）。敏感值用
+`--text-from <文件>`（0600）而不是 `--text`，避免密码进会话记录。⚠️ `POST /element/{eid}/clear` 对
+Flutter 输入框的可靠性仍是**未验证假设**：不可用时自动回退「按当前长度发退格键」。
 
 ## iOS 模拟器（<S>/scripts/ios/）
 
@@ -467,8 +515,9 @@ build 通过 `task(subagent_type="autoDebug", prompt="...")` 把真机操作派�
 5. 日志关注点：`[模块][类名]` 前缀日志 + exception/error/fatal
 6. 危险操作（解绑/删除/付款类）点击前：优先 `snapshot.sh` + `assert_page.sh` 确认页面，语义树为空（exit 4）才 `shot.sh`；macOS 路径 `smart_tap.sh` 默认已拒绝危险词（误判才加 `--allow-danger`）
 7. `integration_test` 命令同样优先走 `bg.sh` 后台模式；确需前台直调时 timeout ≥ 180s
-8. UI 操作优先级：Maestro（Android/iOS 模拟器）> tap_snapshot.sh（有 ≤60 s 快照时）> ui.sh/tap.sh/findtap.sh > Vision 智能命令；任何路径失败先用 `snapshot.sh` 取摘要定位失败层，摘要为空再 `shot.sh`，禁止盲点坐标
-9. **每条结论都要绑证据**（见下节）；没有证据一律写「未验证」，不得写「已修复」
+8. UI 操作优先级：tap_verify.sh（带断言回执）> Maestro > tap_snapshot.sh（页面切换后必须 `--fresh`）> ui.sh/tap.sh/findtap.sh > Vision；任何路径失败先用 `snapshot.sh` 取摘要定位失败层，摘要为空再 `shot.sh`，禁止盲点坐标
+9. **输入一律走脚本**（`android/input.sh` / `driver.py find-type`）：先清空再输入、读回校验；禁止临场拼 `adb shell input text`；`rc=0` 只代表事件送达，不代表点中/输入对
+10. **每条结论都要绑证据**（见下节）；没有证据一律写「未验证」，不得写「已修复」
 
 ## 证据与主张（回报口径）
 

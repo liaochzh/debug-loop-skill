@@ -215,6 +215,27 @@ LOG_DIR="build/debug"
 VISION_API_KEY=""
 EOF
 
+# ---------- 登录凭据文件（可选，0600） ----------
+# 与 android/input.sh --text-from / appium driver.py find-type --text-from 共用同一约定：
+#   KEY=VALUE 一行一个，权限必须 600，**不入库**（自动追加 .gitignore）
+SECRET_FILE="$(pwd)/.debug-login.secret"
+if [ ! -f "$SECRET_FILE" ]; then
+  cat > "$SECRET_FILE" <<'SEOF'
+# debug-loop 调试用登录凭据（KEY=VALUE，一行一个）
+# ⚠️ 必须保持 0600，且不要提交到 git（init.sh 已自动加入 .gitignore）
+# 用法: bash <S>/scripts/android/input.sh --field 账号 --text-from .debug-login.secret --key ACCOUNT
+ACCOUNT=
+PASSWORD=
+SEOF
+  chmod 600 "$SECRET_FILE" 2>/dev/null || true
+  echo "🔐 生成凭据模板: ${SECRET_FILE}（权限 600；填值后 input.sh --text-from 直接可用）"
+fi
+GI="$(pwd)/.gitignore"
+if ! { [ -f "$GI" ] && grep -qxF ".debug-login.secret" "$GI"; }; then
+  printf '\n# debug-loop 登录凭据（勿入库）\n.debug-login.secret\n' >> "$GI" 2>/dev/null || true
+  echo "🧷 已把 .debug-login.secret 加入 .gitignore"
+fi
+
 echo ""
 echo "✅ 生成完成: ${TARGET}（检测到平台: ${PLATFORMS[*]}）"
 echo ""
