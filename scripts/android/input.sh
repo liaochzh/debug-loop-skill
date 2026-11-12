@@ -19,6 +19,7 @@
 #
 # 选项:
 #   --field <关键词>         输入框的 text 或 id 子串（忽略大小写、非正则；= tap_snapshot 语义）
+#   --id <元素 id>            按 id 匹配（只匹配 id 字段，不匹配 text；与 --field 互斥，取后出现的那个）
 #   --exact                  精确匹配且大小写敏感
 #   --index N                多处命中取第 N 个（1-based，默认 1）
 #   --append                 append 模式（不清空；默认 replace = 先清空再输入）
@@ -52,7 +53,7 @@ INTERACT_DIR="$LOG_DIR/interact"
 
 FIELD=""; TEXT=""; TEXT_SET=false; FROM_SET=false; STDIN_SET=false; KEY_NAME=""
 TEXT_FROM=""   # 必须预置：`set -u` 下 --clear-only 路径不会赋值，直接引用会 unbound
-MASK=false; EXACT=false; INDEX=1; MODE="replace"; CLEAR_ONLY=false
+MASK=false; EXACT=false; ID_ONLY=false; INDEX=1; MODE="replace"; CLEAR_ONLY=false
 MAX_RETRY=1; SLOW=false; ONE_KEY=false; DRY_RUN=false
 # 凭据来源（--text-from / --text-stdin）一律按敏感处理：输出恒打 ****，不回显原值
 SECRET=false
@@ -64,6 +65,7 @@ usage() {
 while [ $# -gt 0 ]; do
   case "$1" in
     --field)     [ $# -ge 2 ] || { echo "❌ --field 缺参数值"; exit 2; }; FIELD="$2"; shift 2 ;;
+    --id)        [ $# -ge 2 ] || { echo "❌ --id 缺参数值"; exit 2; }; FIELD="$2"; ID_ONLY=true; shift 2 ;;
     --text)      [ $# -ge 2 ] || { echo "❌ --text 缺参数值"; exit 2; }; TEXT="$2"; TEXT_SET=true; shift 2 ;;
     --text-from)
       FROM_SET=true
@@ -87,7 +89,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ -n "$FIELD" ] || { echo "❌ 需要 --field <关键词>"; exit 2; }
+[ -n "$FIELD" ] || { echo "❌ 需要 --field <关键词> 或 --id <元素 id>"; exit 2; }
 case "$INDEX" in ''|*[!0-9]*) echo "❌ --index 必须为整数: $INDEX"; exit 2 ;; esac
 [ "$INDEX" -ge 1 ] || { echo "❌ --index 必须 ≥1"; exit 2; }
 case "$MAX_RETRY" in ''|*[!0-9]*) echo "❌ --max-retry 必须为非负整数: $MAX_RETRY"; exit 2 ;; esac
@@ -218,6 +220,7 @@ plan_field() {  # <snapshot> <mode: field|field-edit|bounds> <value> [mask:on|of
     local extra=()
     [ "$mask_mode" = "on" ] && [ "$MASK" = true ] && extra+=("--mask")
     [ "$EXACT" = true ] && extra+=("--exact")
+    [ "$ID_ONLY" = true ] && extra+=("--id-only")
     [ "$mode" = "field-edit" ] && extra+=("--editable-only")
     python3 "$FIELD_PY" --snapshot "$snap" --field "$value" --index "$INDEX" ${extra[@]+"${extra[@]}"} --kv
   fi
@@ -294,12 +297,23 @@ do_type() {  # <text>
   return 0
 }
 
-read_back() {  # <bounds> <field> <id> → stdout 当前值；rc 0 找到 / 1 未找到或不是同一个框
-  local snap="$READBACK_SNAP" kv rc=0 want_bounds="$1" want_field="$2" want_id="$3"
-  set +e
-  bash "$SCRIPTS/snapshot.sh" --platform android --json > "$snap" 2>/dev/null
-  rc=$?
-  set -e
+read_back() {  # <bounds> <field> <id> → stdout 当前值
+  # rc 0 找到 / 1 未找到或不是同一个框 / 4 语义树为空（重取一次后仍空，调用方按 contract 报 rc=4）
+  local snap="$READBACK_SNAP" kv rc=0 tries=0 want_bounds="$1" want_field="$2" want_id="$3"
+  while :; do
+    set +e
+    bash "$SCRIPTS/snapshot.sh" --platform android --json > "$snap" 2>/dev/null
+    rc=$?
+    set -e
+    # 空树多是导航/懒激活中间态：重取一次；仍空 ⇒ 由调用方判 rc=4（不能混成「读回不符 rc=6」）
+    if [ "$rc" -eq 4 ] && [ "$tries" -eq 0 ]; then
+      tries=1
+      sleep 0.3
+      continue
+    fi
+    break
+  done
+  [ "$rc" -eq 4 ] && return 4
   [ "$rc" -eq 0 ] || return 1
   set +e
   kv=$(plan_field "$snap" bounds "$want_bounds" off)
@@ -320,7 +334,9 @@ read_back() {  # <bounds> <field> <id> → stdout 当前值；rc 0 找到 / 1 �
     # 节点没有 resource-id（Flutter/Compose 常见）⇒ 用「可编辑节点是否唯一」兜底：
     #   同页多个可编辑框且关键词命中 >1 时，无法确认读的是同一个框，宁可判读回失败（假 rc=6
     #   比「读到别人的值」安全：后者会让后续删除按错误长度执行）。
-    if [ "$rc" -eq 0 ] && [ -z "$want_id" ] && [ "$(kv_get "$kv" total)" != "1" ]; then
+    #   --index N（N>1）本身已消歧 ⇒ 不再用 total==1 卡它（否则正常读回被误判成失败）。
+    if [ "$rc" -eq 0 ] && [ -z "$want_id" ] && [ "$INDEX" -eq 1 ] \
+       && [ "$(kv_get "$kv" total)" != "1" ]; then
       echo "⚠️ 关键词命中多个可编辑节点（total=$(kv_get "$kv" total)），无法确认读回的是同一输入框 ⇒ 按读回失败处理" >&2
       return 1
     fi
@@ -393,12 +409,14 @@ PLAN=$(plan_field "$SNAP" field "$FIELD")
 PLAN_RC=$?
 set -e
 if [ "$PLAN_RC" -ne 0 ]; then
-  echo "❌ 未找到输入框（--field '${FIELD}'，index=${INDEX}）"
+  echo "❌ 未找到输入框（$( [ "$ID_ONLY" = true ] && echo '--id' || echo '--field' ) '${FIELD}'，index=${INDEX}）"
   # ⚠️ 未命中时 _field_target 的 rc=1 是**预期**的：不能用 `|| echo '{}'` 兜（会把 JSON 和 `{}`
   #    拼在一条流里，下游 json.load 直接失败 ⇒ 候选清单静默丢失）；用 `|| true` 保留原输出
   CUES=""
+  CUE_ARGS=(--snapshot "$SNAP" --field "$FIELD" --index "$INDEX")
+  [ "$ID_ONLY" = true ] && CUE_ARGS+=(--id-only)
   set +e
-  CUES=$(python3 "$FIELD_PY" --snapshot "$SNAP" --field "$FIELD" --index "$INDEX" 2>/dev/null)
+  CUES=$(python3 "$FIELD_PY" ${CUE_ARGS[@]+"${CUE_ARGS[@]}"} 2>/dev/null)
   set -e
   show_candidates "${CUES:-}"
   exit 1
@@ -445,7 +463,15 @@ if [ "$CLEAR_ONLY" = true ] || { [ "$MODE" = "replace" ] && [ "$NEEDS_CLEAR" != 
 fi
 
 if [ "$CLEAR_ONLY" = true ]; then
-  LEFT=$(read_back "$BOUNDS" "$FIELD" "$NODE_ID") || { echo "❌ 清空后无法读回输入框" >&2; exit 5; }
+  LEFT=""; RB_RC=0
+  set +e
+  LEFT=$(read_back "$BOUNDS" "$FIELD" "$NODE_ID"); RB_RC=$?
+  set -e
+  case "$RB_RC" in
+    0) : ;;
+    4) echo "❌ 校验阶段语义树为空（重取后仍空）— 需 App 侧 Semantics 或改用 shot.sh + 坐标" >&2; exit 4 ;;
+    *) echo "❌ 清空后无法读回输入框" >&2; exit 5 ;;
+  esac
   if [ -z "$LEFT" ]; then
     echo "✅ 已清空（读回为空）"
     log_interact clear-only "field=$FIELD" "bounds=$BOUNDS" "cleared=true" || true
@@ -464,7 +490,15 @@ while : ; do
   TYPED=true
   sleep 0.3
   ACTUAL=""
-  if ACTUAL=$(read_back "$BOUNDS" "$FIELD" "$NODE_ID"); then
+  RB_RC=0
+  set +e
+  ACTUAL=$(read_back "$BOUNDS" "$FIELD" "$NODE_ID"); RB_RC=$?
+  set -e
+  if [ "$RB_RC" -eq 4 ]; then
+    echo "❌ 校验阶段语义树为空（重取后仍空）— 需 App 侧 Semantics 或改用 shot.sh + 坐标" >&2
+    exit 4
+  fi
+  if [ "$RB_RC" -eq 0 ]; then
     VRC=0
     VFY_ARGS=(--verify --expect "$TEXT" --actual "$ACTUAL")
     [ "$MASK" = true ] && VFY_ARGS+=(--mask)
@@ -517,10 +551,14 @@ while : ; do
     [ -n "$CX2" ] && [ -n "$CY2" ] && { CX="$CX2"; CY="$CY2"; }
     BOUNDS2=$(kv_get "$PLAN2" bounds); [ -n "$BOUNDS2" ] && BOUNDS="$BOUNDS2"
   fi
-  REDO_PLAN=""
+  REDO_PLAN=""; REDO_RC=0
   set +e
-  REDO_PLAN=$(read_back "$BOUNDS" "$FIELD" "$NODE_ID")
+  REDO_PLAN=$(read_back "$BOUNDS" "$FIELD" "$NODE_ID"); REDO_RC=$?
   set -e
+  if [ "$REDO_RC" -eq 4 ]; then
+    echo "❌ 重试前语义树为空（重取后仍空）— 需 App 侧 Semantics 或改用 shot.sh + 坐标" >&2
+    exit 4
+  fi
   # 清空次数与首次同源（_field_target.plan_clear），不再内联复制一份逻辑
   REDO_ARGS=(--plan-clear "${REDO_PLAN:-}")
   [ "$MASK" = true ] && REDO_ARGS+=(--mask)

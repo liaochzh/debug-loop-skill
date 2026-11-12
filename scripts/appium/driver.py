@@ -7,8 +7,10 @@
 #   driver.py find-assert --server <url> --caps <caps.json> [--using ...] [--value ...]
 #   driver.py find-type   --server <url> --caps <caps.json> [--using ...] [--value ...]
 #                         (--text "要输入的文字" | --text-from <KEY=VALUE 文件|->  [--key NAME])
-#                         [--clear|--no-clear] [--mask]
+#                         [--clear|--no-clear] [--mask] [--expect "<期望读回值>"]
 #                         ⚠️ 默认先清空再输入，输入后读回校验（不符 rc=1）；敏感值用 --text-from
+#                         --expect：输入后额外断言 attribute/value 等于该值（输入会被平台转换时用），
+#                         掩码字段只比长度；不符 rc=1
 #   driver.py screenshot  --server <url> --caps <caps.json> --out <path.png>
 #   driver.py flow        --server <url> --caps <caps.json> --steps <steps.json>
 #
@@ -457,6 +459,8 @@ def main():
                    help="find-type 先清空（默认开；旧内容不清空是登录输错的主因）")
     p.add_argument("--no-clear", dest="clear", action="store_false", help="find-type 追加而非替换")
     p.add_argument("--mask", action="store_true", help="find-type 掩码字段（读回只比长度）")
+    p.add_argument("--expect", default="",
+                   help="find-type 输入后额外断言读回值等于该值（平台会转换输入时用；掩码只比长度）")
     p.add_argument("--steps", default="", help="flow 步骤 JSON 文件路径")
     p.add_argument("--out", default="")
     # 会话创建即触发 App 启动；Flutter 首帧/启动页期间取 source 会拿到空树
@@ -541,6 +545,16 @@ def main():
                                   "expect_len": len(text),
                                   "actual_len": None if actual is None else len(actual)}, ensure_ascii=False))
                 sys.exit(1)
+            if args.expect:
+                # 平台会转换输入（大写化/去空格/掩码）时，用 --expect 断言「读回应等于什么」；
+                # 比对与 type_into 同源（field.verify），不另写一套
+                if actual is None or not field.verify(args.expect, actual, args.mask, not args.clear):
+                    print(json.dumps({"found": True, "typed": True, "verified": False,
+                                      "value": args.value,
+                                      "expect_len": len(args.expect),
+                                      "actual_len": None if actual is None else len(actual)},
+                                     ensure_ascii=False))
+                    sys.exit(1)
             print(json.dumps({"found": True, "typed": True, "cleared": args.clear,
                               "value": args.value, "len": len(text)}, ensure_ascii=False))
         else:

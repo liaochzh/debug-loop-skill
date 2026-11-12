@@ -106,6 +106,16 @@ _handle_text() {  # <原始命令串里的文本部分>
     val="$(python3 -c 'import sys;print("\u2022" * len(sys.argv[1]))' "$val")"
   fi
   [ "${AB_DROP_LAST:-0}" = "1" ] && val="${val%?}"
+  if [ "${AB_EMPTY_ON_TEXT:-0}" = "1" ]; then
+    # 输入后语义树变空（导航中间态）⇒ 校验阶段应 rc=4，不能混成「读回不符 rc=6」
+    cat > "$STATE/ui.xml" <<'XML'
+<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" text="" resource-id="" class="android.view.View" package="com.example.demo" clickable="false" bounds="[0,0][1080,1920]" />
+</hierarchy>
+XML
+    return 0
+  fi
   _edit_node "append:${val}"
 }
 
@@ -340,6 +350,21 @@ if run_case "I3-flow"; then
   OUT=$(run_in "$P" "$S" -- bash "$SCRIPT_DIR/android/input.sh" --field nosuchfield --text abc 2>&1); RC=$?
   expect_rc "I3 未找到输入框 → rc=1" 1 "$RC"
   expect_contains "I3 附候选清单" "候选" "$OUT"
+
+  # --id 只匹配 id：命中 resource-id 才成功；用文本去匹配 id 必须失败
+  S=$(fresh_state)
+  OUT=$(run_in "$P" "$S" -- bash "$SCRIPT_DIR/android/input.sh" --id account --text abc 2>&1); RC=$?
+  expect_rc "I3 --id account → rc=0" 0 "$RC"
+  expect_eq   "I3 --id 命中同一输入框" "abc" "$(acct_text "$S/ui.xml")"
+  S=$(fresh_state)
+  OUT=$(run_in "$P" "$S" -- bash "$SCRIPT_DIR/android/input.sh" --id 登录 --text abc 2>&1); RC=$?
+  expect_rc "I3 --id 不看 text（用文案匹配 → rc=1）" 1 "$RC"
+
+  # 校验阶段语义树为空（重取后仍空）⇒ rc=4，不是 rc=6
+  S=$(fresh_state)
+  OUT=$(run_in "$P" "$S" AB_EMPTY_ON_TEXT=1 -- bash "$SCRIPT_DIR/android/input.sh" --field account --text abc 2>&1); RC=$?
+  expect_rc "I3 校验阶段空树 → rc=4" 4 "$RC"
+  expect_contains "I3 空树提示 Semantics" "Semantics" "$OUT"
 
   S=$(fresh_state)
   OUT=$(run_in "$P" "$S" -- bash "$SCRIPT_DIR/android/input.sh" --field account --text abc --dry-run 2>&1); RC=$?

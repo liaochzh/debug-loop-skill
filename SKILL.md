@@ -353,7 +353,7 @@ bash <S>/scripts/test_bg.sh -f clamp # 只跑某组
 | `swipe.sh x1 y1 x2 y2 [ms]` | 滑动 |
 | `settle.sh [--mode auto\|ui\|screen] [--timeout 25] [--interval 0.4] [--keep]` | **等 UI 静止**。默认 `--mode auto`：语义树可用则比两帧 `uiautomator dump`，**语义树无内容（0 个 text/desc 节点）或 dump 连续失败/持续不完整时自动降级整屏像素**（`screencap -p` 比对）。滑动/点击后**先 settle 再 `shot.sh`/`ui.sh`**，避免把动画中间帧当「页面错乱」。退出码：`0`=已静止（输出必带 `判据=ui\|screen`）/ `1`=超时未静止（⚠️ 文案 + 替代手段，不是异常）/ `2`=用法错 / `3`=**判定不可信**（仅 `--mode ui`：语义树无内容、dump 持续失败或不完整；本 3 ≠ `bg.sh` 的 3=LOST）。失败默认保留两帧在 `build/debug/.settle_*`，`--keep` 时成功也保留；screen 阶段一帧都取不到时终报「整屏截图始终不可用」（不谎报「未静止」） |
 | `findtap.sh <关键词> [--max 6] [--dir down\|up] [--wait 0.4]` | **滑动查找并点击**（等价 `scroll --until`）：目标不在当前屏时自动滚动，省掉「滑一次、dump 一次」的手工循环。匹配语义与 `tap.sh --text` 一致（字面包含、忽略大小写、非正则）；命中的文本节点非 `clickable` 时按节点中心坐标兜底并**在输出中注明**。**语义树无内容时首轮立即失败**（不白滑 `--max` 屏）并给 Maestro → Vision → 坐标三级降级路径。退出码：`0`=命中并点击 / `1`=`--max` 次后仍未命中**或语义树无内容** / `2`=用法错 |
-| `input.sh --field <关键词> (--text <值>\|--text-from [文件]\|--text-stdin) [--key NAME] [--mask] [--append] [--clear-only] [--index N] [--max-retry 1] [--slow] [--one-key] [--dry-run]` | **输入框闭环**：定位 → **焦点自检**（`dumpsys input_method` 的 `mInputShown=false` ⇒ rc=7 且**未删未输**，防 DEL 落到别的框；该字段在部分 ROM 缺失时只告警）→ **清空**（`MOVE_END` + `KEYCODE_DEL`×(len+3)，`--one-key` 逐发兼容老 ROM）→ 分段输入（≤20 字符/段，`--slow` 段间隔 0.6 s）→ **读回校验**（按 `bounds` 精确定位；漂移时退「关键词 + 仅可编辑节点 + 同 id/total」复定位；拿不到唯一可编辑节点就按读回失败处理）→ 不符重试一次（重试前重新定位并复检焦点；⚠️ `--append` 不自动重试——重试会清空旧内容，把追加变替换）。`--text-from` 缺省读项目根 `.debug-login.secret`（`init.sh` 生成、0600、已入 `.gitignore`），掩码/凭据来源输出恒 `****`；校验用快照写临时文件、退出即删。⚠️ `adb input text` **只支持 ASCII**（中文/emoji ⇒ rc=8 改走 Maestro `eraseText`+`inputText`）；字面 `%s` 会被当空格（框架限制）。退出码：`0` 通过 / `1` 未找到（附候选）/ `2` 用法或凭据权限错 / `3` 环境不可用 / `4` 语义树为空 / `5` 清空失败 / `6` 读回不符 / `7` 派发失败或**点击未获焦点（未做任何删除/输入）** / `8` 含非 ASCII |
+| `input.sh (--field <关键词> \| --id <元素id>) (--text <值>\|--text-from [文件]\|--text-stdin) [--key NAME] [--mask] [--append] [--clear-only] [--index N] [--max-retry 1] [--slow] [--one-key] [--dry-run]` | **输入框闭环**：定位（`--field` 匹配 text/id 子串；`--id` 只匹配 id 字段）→ **焦点自检**（`dumpsys input_method` 的 `mInputShown=false` ⇒ rc=7 且**未删未输**，防 DEL 落到别的框；该字段在部分 ROM 缺失时只告警）→ **清空**（`MOVE_END` + `KEYCODE_DEL`×(len+3)，`--one-key` 逐发兼容老 ROM）→ 分段输入（≤20 字符/段，`--slow` 段间隔 0.6 s）→ **读回校验**（按 `bounds` 精确定位；漂移时退「关键词 + 仅可编辑节点 + 同 id/total」复定位；拿不到唯一可编辑节点就按读回失败处理；校验阶段语义树重取一次仍空 ⇒ rc=4，不混成 rc=6）→ 不符重试一次（重试前重新定位并复检焦点；⚠️ `--append` 不自动重试——重试会清空旧内容，把追加变替换）。`--text-from` 缺省读项目根 `.debug-login.secret`（`init.sh` 生成、0600、已入 `.gitignore`），掩码/凭据来源输出恒 `****`；校验用快照写临时文件、退出即删。⚠️ `adb input text` **只支持 ASCII**（中文/emoji ⇒ rc=8 改走 Maestro `eraseText`+`inputText`）；字面 `%s` 会被当空格（框架限制）。退出码：`0` 通过 / `1` 未找到（附候选）/ `2` 用法或凭据权限错 / `3` 环境不可用 / `4` 语义树为空 / `5` 清空失败 / `6` 读回不符 / `7` 派发失败或**点击未获焦点（未做任何删除/输入）** / `8` 含非 ASCII |
 
 ## Maestro 命令（<S>/scripts/maestro/ — Android / iOS 模拟器）
 
@@ -434,7 +434,8 @@ run.sh → settle.sh → (tap_verify.sh "目标按钮" --expect has:<目标页�
 **输入纪律（2026-11-12 起）**：`driver.py find-type` 与 flow 的 `{"type":"type"}` 步骤**默认先清空再输入**，
 输入后读 `attribute/value` 校验（不符重试一次，仍不符 rc=1）。全量替换是默认语义 —— 需要追加时显式写
 `--no-clear`（CLI）或 `{"clear": false}`（步骤）；**追加语义不自动重试**（重试会变成「旧值+文本+文本」）。
-密码框加 `--mask`（只比长度）。敏感值用
+密码框加 `--mask`（只比长度）。平台会转换输入时用 `--expect "<期望读回值>"` 额外断言一次（掩码只比长度）。
+敏感值用
 `--text-from <文件>`（0600）而不是 `--text`，避免密码进会话记录。⚠️ `POST /element/{eid}/clear` 对
 Flutter 输入框的可靠性仍是**未验证假设**：不可用时自动回退「按当前长度发退格键」。
 

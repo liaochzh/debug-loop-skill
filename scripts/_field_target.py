@@ -146,6 +146,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(add_help=True)
     ap.add_argument("--snapshot", default="", help="snapshot.sh --json 产物路径（缺省读 stdin）")
     ap.add_argument("--field", default="", help="目标关键词（text 或 id 子串，忽略大小写、非正则）")
+    ap.add_argument("--id-only", action="store_true", help="只在 id 字段匹配（输入法 --id <sid> 用）")
     ap.add_argument("--bounds", default="", help="按 bounds 精确定位（输入后再定位用）")
     ap.add_argument("--exact", action="store_true", help="精确匹配且大小写敏感")
     ap.add_argument("--editable-only", action="store_true",
@@ -199,7 +200,7 @@ def main(argv=None):
                 continue
             if args.editable_only and not is_editable(node):
                 continue
-            if any(tap.matches(v, args.field, args.exact) for v in tap.node_values(node, False)):
+            if any(tap.matches(v, args.field, args.exact) for v in tap.node_values(node, args.id_only)):
                 hits.append(node)
         why = "未命中字段"
 

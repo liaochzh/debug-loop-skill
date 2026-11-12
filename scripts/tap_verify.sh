@@ -375,6 +375,15 @@ LOC=$(locate "$SNAP_OLD")
 LOC_RC=$?
 set -e
 if [ "$LOC_RC" -ne 0 ]; then
+  # _tap_target 的 rc 有语义：5=快照 JSON 不可解析、6=命中但无中心点。统一报成「未命中」
+  # 会把排障引向「页面不对」，而实际是快照/布局问题（2026-11-12 收尾复核 P2）。
+  case "$LOC_RC" in
+    2) echo "❌ 定位参数错误（_tap_target rc=2），检查 --index / --id / --exact" >&2; exit 2 ;;
+    5) echo "❌ 快照 JSON 不可解析（_tap_target rc=5）— 页面可能在切换中，重试或先 settle.sh" >&2; exit 5 ;;
+    6) echo "❌ 命中目标但节点无中心坐标（bounds 不可解析；可能在屏外/被裁剪）" >&2
+       echo "💡 先 bash $SNAP --platform android --max 20 核对 bounds" >&2
+       exit 1 ;;
+  esac
   echo "❌ 未命中目标（--text '${NEEDLE}' index=${INDEX}）"
   echo "💡 目标可能在屏外：bash $SCRIPT_DIR/android/findtap.sh \"$NEEDLE\"（自动滚动查找+点击，同样无回执）" >&2
   echo "💡 或先 bash $SNAP --platform android --max 20 核对当前页" >&2
@@ -540,6 +549,10 @@ while : ; do
   LOC_RC=$?
   set -e
   if [ "$LOC_RC" -ne 0 ]; then
+    case "$LOC_RC" in
+      5) echo "❌ 重试前快照 JSON 不可解析（_tap_target rc=5）— 页面仍在切换" >&2; exit 5 ;;
+      6) echo "❌ 重新定位命中但无中心坐标（bounds 不可解析）" >&2; exit 1 ;;
+    esac
     echo "❌ 重试定位失败（页面仍无该目标）" >&2
     degrade_hint
     exit 1
