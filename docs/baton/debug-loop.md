@@ -45,12 +45,12 @@
 
 ## 下一步
 - 无必做项。候选：`bundle.sh` 证据包 / MCP 化（方案 §1 明确本轮不做，须先确认需求）。
-- 输入/点击可靠性回归：见下方「输入 / 点击可靠性（2026-11-12）」段的四项真机假设；通过后再 `publish.sh`。
+- 输入/点击可靠性回归：见下方「输入 / 点击可靠性（2026-11-12）」段的四项真机假设（当前无在线 Android 设备、无可构建被测工程 ⇒ 待设备/工程就绪后补验；iOS 侧可覆盖 `element/clear` 一项）。代码已于 2026-11-12 发布，真机问题按 hotfix 走。
 - 若重验空树分支：按上面「复现空树场景的方法」四步走即可（约 3 分钟，Gradle 首次构建 ~60s）。
 
 ## 沙箱 / 真机链路（2026-11-04）
 
-方案与审查（结论「通过」，7 条问题全部处置）已归档：`~/docs/archive/2026-11-debug-loop沙箱与权限收尾.md` + `~/docs/archive/2026-10~11-审查轮次台账.md`；提交：`c2cf081`（A/B/C/D）；随后补提交上一会话遗留的 iOS 链路改动 `e61ed99`（真机枚举三级回退 / 沙箱降级契约 / Appium 坐标与退后台，审查见 `docs/archive/2026-11-debugloop-next与iOS回退.md`（内部归档，不入库），第 2 轮 LGTM）。**均未 push**，发布走 `publish.sh`。
+方案与审查（结论「通过」，7 条问题全部处置）已归档：`~/docs/archive/2026-11-debug-loop沙箱与权限收尾.md` + `~/docs/archive/2026-10~11-审查轮次台账.md`；提交：`c2cf081`（A/B/C/D）；随后补提交上一会话遗留的 iOS 链路改动 `e61ed99`（真机枚举三级回退 / 沙箱降级契约 / Appium 坐标与退后台，审查见 `docs/archive/2026-11-debugloop-next与iOS回退.md`（内部归档，不入库），第 2 轮 LGTM）。**发布**：该批提交已随主线发布（发布走 `publish.sh`；2026-11-12 `cbec580` 为最新远端）。
 
 ### 已完成
 - **A `safe_run.sh` 软链 SDK 推导**：`--profile build` 的 Flutter SDK 缓存改为「先解析软链链再校验」；`resolve_symlink_chain()` 拒相对路径、逐跳 `cd` + `pwd -P`、10 跳上限；解析失败一律不放行且走 stderr 可观测。原 6 道校验保留。回归新增独立分组 `N13-flutter软链`（不引用 `N12_SKIP`、PATH 收窄），`test_safe_run.sh` 共 **43 项**。
@@ -78,7 +78,7 @@
 
 ## 输入 / 点击可靠性（2026-11-12）
 
-方案 `~/docs/plan/20261112-input-click-reliability.md`（v2）；审查 `~/docs/review/20261112-input-click-reliability{,.r2}.md`（r1 不通过 P0×2+P1×9+P2×9 → 修复 → r2 不通过（P1×2+P2×5）→ 修复 → 收尾只读复核「可合入（有条件）」，条件项已修）。提交 `73f89c9`（输入/点击闭环）+ `e281008`（plan 剩余项），**均未 push**，发布走 `publish.sh`。
+方案 `~/docs/plan/20261112-input-click-reliability.md`（v2）；审查 `~/docs/review/20261112-input-click-reliability{,.r2}.md`（r1 不通过 P0×2+P1×9+P2×9 → 修复 → r2 不通过（P1×2+P2×5）→ 修复 → 收尾只读复核「可合入（有条件）」，条件项已修）。提交 `73f89c9`（输入/点击闭环）+ `e281008`（plan 剩余项）+ `cbec580`（文档归档）。**已于 2026-11-12 发布**（`publish.sh` → 远端 `cbec580`）。
 
 ### 已完成
 - **单一判据源 `scripts/_field_target.py`**：清空次数 / 读回校验（`plan_clear`、`verify(append)`、`is_editable`、`--plan-clear`、`--id-only`、`total`）。改清空策略只改这一处。
