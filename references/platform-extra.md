@@ -49,3 +49,12 @@ powershell -ExecutionPolicy Bypass -File <S>\scripts\windows\shot.ps1
 
 首次在 Windows 机使用前，按 `references/windows-setup.md` 验证环境。
 
+
+## iOS 真机（devicectl，2026-10-23 起支持）
+
+- 前置：USB 连接 + 已配对 + iPhone 开启「开发者模式」；签名来自 Xcode 工程 `DEVELOPMENT_TEAM`。
+- **真机默认构建 profile**（`--profile`）：iOS 14+ 的 debug(JIT) 包只能由 Flutter/Xcode 启动，`devicectl launch` 会停在 Flutter 限制提示页；`--debug` 仍可构建但需用 `flutter run` 启动。
+- `build.sh --device` → `build/ios/iphoneos/*.app`（锁 `.last_ios_app_device`）
+- `run.sh --device` → `devicectl device install app` + `process launch`（输出 PID）
+- `shot.sh --device` → `devicectl device capture screenshot`（失败回退 `idevicescreenshot`）
+- `logs.sh --device [--app-only] [行数] [关键词]` → 读 `build/debug/app_device.log`（后台 `idevicesyslog --syslog-relay | grep "<App 进程名>("` 采集；进程名由产物 `CFBundleExecutable` 推导，`.debug.env` 的 `IOS_APP_NAME` 可覆盖，缺省回退 `Runner`；模拟器日志仍为 `app.log`，两者分文件不交叉）

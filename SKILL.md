@@ -14,14 +14,8 @@ metadata:
 
 ## 前置检查（必做）
 
-1. 在**项目根**确认存在 `.debug.env`（**Flutter 工程与原生 Android 工程均可**）。若不存在，运行：
-   ```bash
-   bash <S>/init.sh
-   ```
-   > `.debug.env` 由**主 agent / 人工**准备：subagent 档无写权限，**不能自举** ⇒ 缺失时立即登记阻塞并返回，不要重试。
-2. `.debug.env` 含各平台常量（包名/BundleID/AppName + 可选 flavor/scheme/显式产物路径），推断错误可手工修正后重试。
-   > `.debug.env` 是 **KEY=VALUE 常量文件**，由 `scripts/_env.sh` **安全解析**（不 `source`、不 `eval`、不展开变量）。
-   > 允许 `export ` 前缀 / 行尾 ` #` 注释 / CRLF；**变量引用（`$HOME/…`）不展开**；值里含 `;`、反引号、`$(` 会被**拒绝**（防注入）。
+1. 在**项目根**确认存在 `.debug.env`（Flutter 与原生 Android 工程均可）；不存在则运行 `bash <S>/init.sh`。它由**主 agent / 人工**准备：subagent 无写权限、**不能自举** ⇒ 缺失时登记阻塞并返回，不要重试。
+2. `.debug.env` 是 **KEY=VALUE 常量文件**（包名/BundleID/AppName + 可选 flavor/scheme/显式产物路径），由 `scripts/_env.sh` **安全解析**（不 `source`、不 `eval`、不展开变量；允许 `export ` 前缀、行尾 ` #` 注释、CRLF；值里含 `;`、反引号、`$(` 会被**拒绝**，防注入）。推断错误可手工修正后重试。
 3. **一次自检代替逐项探测**：`bash <S>/scripts/doctor.sh [--platform android|ios|ios-device|macos|windows|all]`
    （`ios` = 模拟器 + 真机都报告；`ios-device` = 只认真机，与 `snapshot.sh --platform ios-device` 同一取值）
    一条命令报告「配置 / 工具链 / 设备 / 产物 / 可选密钥」五类事实（✅ 可用 / ⚠️ 可选缺失 / ❌ 阻塞），
@@ -38,11 +32,8 @@ metadata:
 - 调用形式：`bash <S>/scripts/safe_run.sh [--profile P] -- bash <S>/scripts/<platform>/<script>.sh [args]`
   （沙箱入口为唯一形态；`<S>` 软链与 realpath 两形态都在白名单，见「权限纪律」）
   > 下文各平台命令表里的 `bash <S>/scripts/…` 示例均为**裸形态**；实际执行时**一律**前置入口：`bash <S>/scripts/safe_run.sh [--profile P] -- <该命令>`（profile 放行清单见 `references/permission-discipline.md`）。
-- **启动经济**：一次定位设备、一次 dump 页面、一次读日志。禁止用 `--help`、`adb devices`、`ui.sh` 反复探路来「确认状态」——
-  目标脚本自身会给出事实与失败原因；重复探测既慢，又容易把「页面确实是空的」误判成「权限或环境坏了」。
-  需要新一轮事实时，先问「上一条证据缺什么」，而不是把同样的命令再跑一次。
-- **脚本的 `💡` 提示优先于自行重规划**：失败输出里的处置建议（降级路径、候选清单、`ui.sh rc=N`）就是下一手依据；
-  先按提示做一次，再考虑换思路。
+- **启动经济**：一次定位设备、一次 dump、一次读日志。禁止用 `--help`、`adb devices`、`ui.sh` 反复探路「确认状态」——脚本自身会给出事实与失败原因；重复探测既慢，又容易把「页面确实是空的」误判成「权限或环境坏了」。需要新事实时先问「上一条证据缺什么」。
+- **脚本的 `💡` 提示优先于自行重规划**：失败输出里的处置建议（降级路径、候选清单、`ui.sh rc=N`）就是下一手依据，先按提示做一次再换思路。
 - 解析优先级（由强到弱，**不得跳级**）：**语义/文本定位**（Maestro → `tap_snapshot.sh` → `ui.sh`/`findtap.sh`）＞ **Vision 视觉定位** ＞ **坐标**。
   坐标是兜底，用前必须 `shot.sh` 看过当前页；用了坐标就要在回报里写明「坐标兜底 + 已截图确认」。
 
@@ -153,24 +144,8 @@ metadata:
 - `install.sh`/`run.sh` 按「显式覆盖（`ANDROID_APK_PATH`/`IOS_APP_PATH`/`MACOS_APP_BUNDLE`/`WINDOWS_EXE_PATH`）> 锁文件 > 输出目录最新发现」三级解析；多候选时按设备 ABI 优先（Android）+ mtime 取最新并警告；`flutter clean` 后锁失效自动回退目录发现。
 - 运行时 ID 以产物为准：Android 从 APK 提取 package（覆盖 `applicationIdSuffix`），iOS 从 `.app/Info.plist` 读 BundleID；提取失败回退 `.debug.env` 并告警。
 
-### 埋点内测包（INTERNAL_METRICS）
-
-`<S>/scripts/ios/build_metrics.sh --pod <pod> --symbol <串> [--symbol …] [--control <串> …] [--mode profile|release] [--restore|--keep|--clear-pending|--force]`
-把「给 Pods 的 `<pod>.release.xcconfig` 临时加 `INTERNAL_METRICS` → 构建 → `strings` 判据 → 还原 →
-重编 → 判据归零」做成状态机（备份 + sha256 守卫、pending 标记、审计日志）。**只能在宿主机执行**
-（沙箱内 rc=3），且需先 `pod install` 生成 xcconfig（该文件被 Profile/Release 共用、常被 gitignore）。
-
-- **`--mode` 只接受 `profile`/`release`**：debug 走 `debug.xcconfig`，且 `#if DEBUG` 会让判据恒真 ⇒ 假阳性。
-  `--mode release` 已于 2026-11-04 实测通过（开发签名；判据 1 → 0 归零）；它与 `profile` 走同一条状态机，
-  区别只是 `flutter build` 的模式参数。⚠️ 产出是**开发签名**真机包，上架/分发（`flutter build ipa`）
-  仍需分发描述文件，不在本脚本范围内。
-- 判据示例：`--symbol P2PCameraOverlap --control 'ThingLogSDK.startLog done'`；对照串恒应 ≥1
-  （证明 `strings` 通道没坏），`[P2PHeat]` 应恒 0。
-- 中断/失败留 `<项目根>/build/debug/metrics/pending_restore` ⇒ 下次注入被拒，先 `--restore`；
-  确认误报用 `--clear-pending`（仅当 xcconfig 已无标记）。`--keep` 只用于「故意留注入态」，必须手工收尾。
-- **`[IPC] ThingLogSDK.startLog done` 的触发条件（runbook）**：唯一调用点是导出涂鸦日志
-  （`IPCBusinessPlugin.swift` 的 `exportTuyaLogs`），入口只有「登录页长按 logo」与「初始化页按钮」
-  ⇒ **已登录态够不到**，需先退出登录再触发；别把它误判成「日志通道坏了」。
+> 内测埋点包（`INTERNAL_METRICS` 注入 → 构建 → `strings` 判据 → 还原）的状态机、`--mode` 约束、pending 与 runbook 见
+> `references/ios-metrics.md`（须宿主机执行，沙箱内 rc=3）。
 
 ## 平台路由
 
@@ -205,12 +180,8 @@ bash <S>/scripts/bg.sh list                              # 最近 10 个 job
 
 ### ⚠️ 轮询规范（两条，务必遵守）
 
-1. **`wait` 必须短轮询（`--timeout ≤ 100`），循环调用直到拿到 0/1/3。**
-   `wait` 自身跑在 shell 的 120s 前台超时下——`--timeout 600` 实际会在 120s 被外层强杀（返回 10 但并非任务结束）。
-   job 本身不受影响（已脱离会话），但**单次长 wait 会让调用方拿到误导性的返回**。正确写法：`wait --timeout 100` → 返回 10 → 再 `wait --timeout 100` → ……直到 0/1/3。
-2. **日志长时间无新增 ≠ 卡死。**
-   `flutter build` 全程可能只有一行 `Running Gradle task 'assembleDevDebug'...` 持续 8 分钟以上（实测 Android debug 构建 473s），期间 CPU 极低、无文件写入——这是 Gradle 依赖解析/下载的正常表现。
-   **判定卡死的唯一依据是 `status` 返回 `LOST` 或进程消失**，不是「日志没动」。不要因日志静止而提前终止或降级。
+1. **`wait` 必须短轮询**：`--timeout ≤ 100`，返回 10 就再 `wait`，循环到 0/1/3。`wait` 自身受 shell 120s 前台超时约束（`--timeout 600` 会在 120s 被外层强杀，job 本身不受影响），单次长 wait 只会拿到误导性返回。
+2. **日志长时间无新增 ≠ 卡死**：`flutter build` 可能只有一行 `Running Gradle task …` 持续 8 分钟以上（实测 Android debug 473s，CPU 极低、无文件写入属 Gradle 依赖解析的正常表现）。判定卡死的唯一依据是 `status` 返回 `LOST` 或进程消失，不要因日志静止提前终止或降级。
 
 可包装任意脚本（`android/build.sh`、`maestro/flow.sh <flow.yaml>`、`macos/smart_tap.sh "<kw>"` 等），job 元数据落 `build/debug/jobs/`。
 ⚠️ `ios/build.sh` **除外**：iOS 构建须在宿主机跑（沙箱内 SwiftPM 嵌套 `sandbox-exec` 被拒），见「权限纪律」。
@@ -247,18 +218,9 @@ bash <S>/scripts/test_bg.sh -f clamp # 只跑某组
 
 **建议**：日常调试 + agent 自动化优先模拟器；真机仅用于最终回归验证、性能/功能实测。
 
-**启动模拟器**：
-- Android：`flutter emulators --launch <avd_name>`（或 `$ANDROID_HOME/emulator/emulator -avd <name>`）
-- iOS：`open -a Simulator` + `xcrun simctl boot <device_udid>`
+**启动模拟器**：Android `flutter emulators --launch <avd_name>`（或 `$ANDROID_HOME/emulator/emulator -avd <name>`）；iOS `open -a Simulator` + `xcrun simctl boot <device_udid>`。
 
-**iOS 真机（2026-10-23 起支持）**：
-- 前置：USB 连接 + 已配对 + iPhone 开启「开发者模式」；签名来自 Xcode 工程 `DEVELOPMENT_TEAM`。
-- **真机默认构建 profile**（`--profile`）：iOS 14+ 的 debug(JIT) 包只能由 Flutter/Xcode 启动，`devicectl launch` 会停在 Flutter 限制提示页；`--debug` 仍可构建但需用 `flutter run` 启动。
-- `build.sh --device` → `build/ios/iphoneos/*.app`（锁 `.last_ios_app_device`）
-- `run.sh --device` → `devicectl device install app` + `process launch`（输出 PID）
-- `shot.sh --device` → `devicectl device capture screenshot`（失败回退 `idevicescreenshot`）
-- `logs.sh --device [--app-only] [行数] [关键词]` → 读 `build/debug/app_device.log`（后台 `idevicesyslog --syslog-relay | grep "<App 进程名>("` 采集；进程名由产物 `CFBundleExecutable` 推导，`.debug.env` 的 `IOS_APP_NAME` 可覆盖，缺省回退 `Runner`；模拟器日志仍为 `app.log`，两者分文件不交叉）
-- 等价开关：`IOS_TARGET=device`；显式 UDID：`IOS_DEVICE_UDID`。**默认仍是模拟器**，`--device` 不会污染模拟器目标。
+**iOS 真机**：前置（USB + 已配对 + 开发者模式）、`--profile` 默认构建、`build/run/shot/logs --device` 的命令与锁文件见 `references/platform-extra.md` §iOS 真机（devicectl）；等价开关 `IOS_TARGET=device` / `IOS_DEVICE_UDID`，**默认仍是模拟器**。
 
 **固定设备**：团队统一一个型号（如 Pixel 5 / iPhone 15），永久使用该 UDID/avd，避免每次换设备重新定位坐标。
 
@@ -379,12 +341,7 @@ flutter test integration_test/<file>.dart -d <simulator_udid>
 | Widget 测试 | `flutter test widget_test.dart` | 10s-1min | 无 |
 | Integration 测试 | `flutter test integration_test/<file>.dart -d <device>` | 1-3min | 模拟器/真机 |
 
-**优先级**：能 unit 不 widget，能 widget 不 integration。
-
-**integration_test 注意**：
-- timeout ≥ 180s（避免 agent 超时）
-- 拆成多个独立 test 文件（如 `config_flow_test.dart`、`transfer_flow_test.dart`），避免单 test 超时
-- 模拟器优先（更快、更稳）
+**优先级**：能 unit 不 widget，能 widget 不 integration。integration_test 拆成多个独立 test 文件、模拟器优先，命令同样走 `bg.sh`（见核心规则 7）。
 
 ## 角色协作
 
