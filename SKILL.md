@@ -37,7 +37,7 @@ metadata:
 - 所有脚本必须从**项目根**执行（按 `$PWD` 查找 `.debug.env`，产物写入项目 `build/debug/`）
 - 调用形式：`bash <S>/scripts/safe_run.sh [--profile P] -- bash <S>/scripts/<platform>/<script>.sh [args]`
   （沙箱入口为唯一形态；`<S>` 软链与 realpath 两形态都在白名单，见「权限纪律」）
-  > 下文各平台命令表里的 `bash <S>/scripts/…` 示例均为**裸形态**；实际执行时**一律**前置入口：`bash <S>/scripts/safe_run.sh [--profile P] -- <该命令>`（profile 选择见「权限纪律」表）。
+  > 下文各平台命令表里的 `bash <S>/scripts/…` 示例均为**裸形态**；实际执行时**一律**前置入口：`bash <S>/scripts/safe_run.sh [--profile P] -- <该命令>`（profile 放行清单见 `references/permission-discipline.md`）。
 - **启动经济**：一次定位设备、一次 dump 页面、一次读日志。禁止用 `--help`、`adb devices`、`ui.sh` 反复探路来「确认状态」——
   目标脚本自身会给出事实与失败原因；重复探测既慢，又容易把「页面确实是空的」误判成「权限或环境坏了」。
   需要新一轮事实时，先问「上一条证据缺什么」，而不是把同样的命令再跑一次。
@@ -115,90 +115,16 @@ metadata:
 - **依赖安装与升级属于用户动作**：`brew install maestro`、`npm i -g appium`、`sudo automationmodetool …` 等**不自动执行**。
   缺工具时由本 skill 报「缺 X，需用户安装」（doctor.sh 已分级标出），不要 `npx -y xxx@latest` 之类可变版本自举。
 
-### 权限纪律（作为 subagent 执行时**必须**遵守）
+### 权限纪律（执行前必读，作为 subagent 时**强制**）
 
-- **唯一执行入口 = 沙箱**：本 skill 的所有命令（含 skill 自己的脚本）一律经 `safe_run.sh` 执行：
-
-  ```bash
-  bash <S>/scripts/safe_run.sh [--profile ui|build|ios|macos] [--project-root <proj>] -- <命令...>
-  ```
-
-  | profile | 用途 | 额外放行 |
-  |---|---|---|
-  | `ui`（默认） | 截图 / dump / 点击 / 日志等日常操作 | 写 `build/`、`docs/test/`、`$TMPDIR`、`/private/tmp` |
-  | `build` | `flutter build` / `gradle` / `xcodebuild` | 写整个项目 + 缓存目录（含 `~/.pub-cache`、`~/.gradle`、`~/.dart-tool`、**Flutter SDK 的 `bin/cache`**），**且允许出网**（依赖下载；证书校验放行 trustd 通道） |
-  | `ios` | `xcrun simctl` / `devicectl` / 模拟器截图 | 补 CoreSimulator / diskimaged 等 mach 通道 |
-  | `macos` | `screencapture` / `cliclick` / 智能点击 | 补 WindowServer / CARenderServer / 服务发现通道 |
-
-  - **沙箱是唯一执行边界**：写面只到项目 `build/`、`docs/test/`、`$TMPDIR`、`/private/tmp`（`--profile build` 才放开整个项目根），
-    外加调试工具的缓存目录 `~/.maestro`、`~/.appium`、`~/Library/Logs/maestro`（maestro 解包依赖/写日志锁需要，所有 profile 都有）；
-    `~/.ssh`、`~/.aws`、`~/.gnupg`、`~/.netrc`、`~/Library/Keychains` 读写全拒，`~/Library/LaunchAgents*`、登录脚本只拒写；
-    `.env` / `.env.local` 等 env 家族在 shell 面也读不到（仅 `.debug.env` 放行）；
-    iOS 真机链路已放行 **usbmuxd 本机 unix socket**（`libimobiledevice`：`idevice_id`/`ideviceinfo`/`idevicesyslog`；
-    `xctrace list devices` 在沙箱内不可用，设备枚举自动回退 `devicectl` / `idevice_id`）；
-    默认禁网（仅放行 adb `5037` / appium `4723` 的**本机**端口；另允许 `bind` 本机任意端口，仅 adb 起 daemon 需要）。
-  - `--project-root` 缺省取 `$PWD`；**只接受白名单根**（`~/Projects`、`/Volumes`、`/private/tmp`、`$TMPDIR`），
-    且拒绝 `$HOME` / `/` 本体。缺省且 `$PWD` 不在白名单时**写面自动收窄到 `$TMPDIR`**（stderr 会提示）；
-    要写项目内产物必须显式传项目根。需要新根改 `safe_run.sh` 的 `ALLOW_ROOTS`。
-  - **退出码**：`2` = 用法错；**`117` = 沙箱不可用**（fail-closed，命令根本没跑）。
-    遇到 `117` 必须停下并回报「沙箱不可用」，**不得**绕过入口裸跑命令。
-    ⚠️ 其余退出码是**命令自己的**、原样透传：例如 `snapshot.sh` 的 `rc=4` = 语义树为空（正常观测，见「页面观测阶梯」），
-    **不要**把 `4` 当成沙箱故障。
-  - 裸 `bash <S>/scripts/<x>.sh`（不经 `safe_run.sh`）在白名单外 ⇒ 秒拒；这是**结构护栏**，不是缺权限。
-  - **`<S>` 必须写成绝对路径**（`/Users/<你>/.config/opencode/skills/debug-loop` 或 `.../Projects/debug-loop-skill` 两种都在白名单）；
-    写成 `~/.config/...`、`$HOME/...` 或相对路径**不匹配**白名单 ⇒ 秒拒。这是踩过的坑，不是权限问题。
-  - 沙箱内 `pgrep` / `ps` 不可用，`kill` 只能作用于**本沙箱内**进程：日志采集的存活判断已改用 pid 文件（见 `ios/logs.sh`）。
-- **`Operation not permitted` 的读法**（沙箱拒绝）：
-  - 写 `~/.ssh`、写项目外路径、连外网 ⇒ **边界正常**：换落点（`build/debug/`、`$TMPDIR`）或改用 skill 脚本，**不算权限被拒中止**。
-  - 需要出网（下载依赖）⇒ 用 `--profile build`，不要 `--net` 硬开普通 profile。
-  - 报 `sandbox-exec: sandbox_apply: Operation not permitted` ⇒ **嵌套沙箱被系统拒绝**（典型于 `flutter build ios`）：
-    换 profile/加权限都无效，按下条交回主 agent，**不要**反复重试。
-  - 只有「沙箱入口本身起不来（rc=117）」或「设备侧权限（USB 调试授权、屏幕录制、辅助功能）」才算中止条件 4。
-- **沙箱内**不能**跑 `flutter build ios`**（含 `--profile build`）：xcodebuild 解析 SwiftPM 依赖时会**再套一层
-  `sandbox-exec`**，macOS 不允许嵌套沙箱 ⇒ 必失败（实测命令形态：
-  `bash <S>/scripts/safe_run.sh --profile build --project-root <项目根> -- bash <S>/scripts/ios/build.sh --device`）：
-  ```
-  xcodebuild: error: Could not resolve package dependencies:
-    sandbox-exec: sandbox_apply: Operation not permitted
-  ```
-  已实测**无效**的绕过：`env SWIFTPM_DISABLE_SANDBOX=1`（SwiftPM 环境变量）、
-  `xcodebuild -resolvePackageDependencies -onlyUsePackageVersionsFromResolvedFile`（xcodebuild 参数）、
-  以及换成 `--profile ios`。
-  ⇒ **subagent 不得自行到宿主机裸跑构建**（那是绕过唯一执行边界）；应停止并在回报里写
-  「iOS 构建需主 agent 在宿主机执行」，由主 agent 构建后你再继续安装/启动/取证。
-- **`--profile build` 的 Flutter SDK 缓存按「真实路径」判定**：`command -v flutter` 常是软链
-  （brew cask：`/opt/homebrew/bin/flutter` → `Caskroom/<ver>/flutter/bin/flutter`），入口会先解析
-  软链链（每跳 `pwd -P`、上限 10 跳）再校验 `<SDK>/bin/cache`；相对路径 / 解析失败（超过 10 跳）
-  **不放行且 stderr 说明原因**（此时 flutter 写 cache 报 `Operation not permitted`，属已知限制，不要改权限面）。
-  断链 / 成环会被 `command -v` 直接跳过（等同「没装 flutter」，静默），这种情况本就不放行。
-- **iOS 真机安装（`devicectl install`）在沙箱内不可用**（实测：`sandbox_extension_issue_file` 被拒，
-  `.app` 的访问权限交不给沙箱外的 CoreDevice helper ⇒ 读 `Info.plist` 报 `NSCocoaErrorDomain 257`）。
-  `ios/run.sh --device` 在沙箱内会带宿主机指引 **rc=3** 退出（**先停旧采集、安装失败即退出，不留孤儿采集**）；
-  安装+启动交主 agent 在宿主机跑 `bash <S>/scripts/ios/run.sh --device`（cwd 为项目根）。
-  ⚠️ 把 `.app` 暂存到 `${TMPDIR}` **无效**（已实测），不要重试这类绕过。
-- **沙箱内已知能力限制（iOS 模拟器语义能力）**：XCUITest 驱动（maestro 的 iOS 侧）在嵌套沙箱内起不来
-  （`maestro-driver` 数秒内退出，JVM 无限轮询 `127.0.0.1:22087`）⇒ 以下命令在沙箱内**直接 rc=3 快失败**，不重试：
-  - `snapshot.sh --platform ios`、`assert_page.sh --platform ios`
-  - `maestro/*`（iOS 模拟器路径：`assert.sh` / `tap.sh` / `assert_batch.sh` / `flow.sh`）
-  - **降级做法**：UI 判定用 `shot.sh`（截图）+ `logs.sh`（日志）+ 人工/视觉判读；**不要**反复重试或用别的形态试探。
-  - **iOS 真机不受限**：走 Appium（`snapshot.sh --platform ios-device` / `appium/driver.py`），沙箱内可用（`--profile ios`）。
-  - 需强行试验时：`SNAPSHOT_MAESTRO_TRY=1`（snapshot，默认 45 s 有界等待）/ `MAESTRO_ALLOW_SANDBOX=1`（maestro 脚本，
-    可能挂起，需自加超时）。
-- **`.debug.env` 现在可读**（read 面对 build / autoDebug / debug 放行 `*.debug.env`）：
-  需要键值时可直接 `bash <S>/scripts/safe_run.sh -- cat .debug.env`，或交给 `scripts/_env.sh` 解析。
-  `.env` / `.env.*` **仍不可读**，不要尝试绕过。
-- **产物落点**：沙箱内可写 `build/`、`docs/test/`、`$TMPDIR`、`/private/tmp`；因此：
-  - 截图 → `shot.sh`（自带 `mkdir -p "$LOG_DIR"`）
-  - 拉设备文件 → `pull.sh <设备侧路径> [本地名]`
-  - 读行区间 → **用 `read` 工具的 `offset`/`limit`**（不是 `sed -n 'a,bp'`）
-  - 抽字段 → **`grep -oE` / `grep -E -B/-A`**
-  - 去重/排序 → `scripts/sort.sh [-u] [-r] [-n] [-k <列>] [-o <文件>]`；也可直接在 `$TMPDIR` 写临时脚本
-- **多步逻辑**：优先写进 skill 内脚本；一次性编排可经入口内联：
-  `bash <S>/scripts/safe_run.sh -- sh -c 'cd <项目根> && <命令1> && <命令2>'`。
-  ⚠️ 内联脚本里**不要写 `>` / `>>` 重定向**：shell 面有硬化的 `* > *` / `* >> *` deny（防写面开洞），
-  重定向会被整条拒掉。需要落盘就让脚本自己写（`shot.sh` / `pull.sh` / `snapshot.sh` 都自带落点），
-  或用 `tee` 之外的方式（如 `grep -o … -f 文件` 不支持时改写进 `$TMPDIR` 的脚本再执行）。
-  ⚠️ 不要拼「`&&` / `;` 串联的裸命令」——那会绕过沙箱入口，落白名单兜底 deny。
+- **唯一执行入口**：所有命令经 `bash <S>/scripts/safe_run.sh [--profile ui|build|ios|macos] [--project-root <proj>] -- <命令>`；白名单外裸跑 `bash <S>/scripts/*.sh` 秒拒（结构护栏，不是缺权限）。
+- **写面**：项目 `build/`、`docs/test/`、`$TMPDIR`、`/private/tmp`；`--profile build` 才放开整个项目根。`~/.ssh`、`~/.aws`、`~/.gnupg`、`~/.netrc`、Keychains 全拒；`.env*` 读不到，仅 `.debug.env` 可读。
+- **`<S>` 必须绝对路径**：`~` / `$HOME` / 相对路径不匹配白名单 ⇒ 秒拒。
+- **`117` = 沙箱不可用（fail-closed）**：停下并回报，不得裸跑绕过；其余退出码是脚本自己的（`snapshot.sh` 的 `4` = 语义树为空，属正常观测）。
+- **必须交回主 agent**：`flutter build ios`（嵌套沙箱被系统拒，换 profile 也无效）与 `devicectl install`（沙箱内能力缺失）。回报写「需主 agent 在宿主机执行」。
+- **沙箱内 iOS 模拟器语义能力不可用**：`snapshot.sh` / `assert_page.sh --platform ios` 与 `maestro/*` 的 iOS 路径 rc=3 快失败 ⇒ 降级 `shot.sh` + `logs.sh`，不重试。
+- **禁止**：`>` / `>>` 重定向；`&&` / `;` 串联裸命令（都会绕过沙箱入口）。
+- 完整判据（`Operation not permitted` 读法、profile 放行清单、Flutter SDK 缓存软链、内联脚本形态）→ `references/permission-discipline.md`。
 
 ## 页面快照与断言（`<S>/scripts/` — 跨平台）
 
@@ -400,7 +326,7 @@ run.sh → settle.sh → (tap_verify.sh "目标按钮" --expect has:<目标页�
 2. **Maestro**（`maestro/tap.sh` / `assert.sh` / `flow.sh`）— 语义定位，无需坐标、无需截图；多步/输入用 `flow.sh`（`eraseText` + `inputText`），中文输入只能走这里
 3. **`tap_snapshot.sh 关键词`** — 已有 ≤60 s 快照时最快（命中缓存 <1 s），且能点 `clickable=false` 的文本节点；无缓存时 ≈ 一次 `snapshot.sh` + 点击。⚠️ **页面切换后必须 `--fresh`**，否则按旧坐标点
 4. `ui.sh` 命中 → `tap.sh --text 关键词` / `tap.sh x y`；**目标不在当前屏**时用 `findtap.sh 关键词`（自动滚动查找+点击，省掉手工「滑一次 dump 一次」）
-5. **Vision 智能命令**（语义树缺失/视觉状态判断时，见下节）
+5. **Vision 智能命令**（语义树缺失/视觉状态判断时；macOS 的 `smart_tap.sh` 见 `references/platform-extra.md`，图像分析见本节 Vision 命令）
 6. 坐标点击前必须 `shot.sh` + `Read` 确认当前页（属 L2 白名单④；滑动/点击后先 `settle.sh`，避免抓到动画中间帧）
    > 例外：**与点击同源于同一时刻语义快照**的坐标（`tap_snapshot.sh`、`snapshot.sh --center` + `tap.sh x y`）不属坐标兜底，免 `shot.sh` 前置；危险操作仍需确认（白名单⑤）。
    > 2–4 与 6 的 rc=0 **都只表示事件已送达**：必须再用 `assert_page.sh --wait` 判「有没有点中」。
@@ -418,26 +344,6 @@ run.sh → settle.sh → (tap_verify.sh "目标按钮" --expect has:<目标页�
   - 视觉回归对比（`compare` task）
 - Vision 失败（exit 3） → 回退 `ui.sh + logs.sh` 组合判断，不得臆断视觉信息
 - **Vision API Key 配置**：`VISION_API_KEY` 可通过 CLI `--api-key`、环境变量、或 `.debug.env` 的 `VISION_API_KEY` 键三级读取。若在 `.debug.env` 中填入真实 Key，务必把该文件加入 `.gitignore`，避免密钥入库。
-
-## macOS 智能命令（<S>/scripts/macos/ + vision/smart_lib.sh）
-
-一体化「截图 → Vision 定位 → Retina 换算 → 点击」，含安全护栏（置信度 <0.7、危险词、页面 loading/白屏/遮挡时拒绝点击）。命令：`smart_tap.sh`（`--dry-run` / `--stable` / `--allow-danger`）、`smart_assert.sh`（`--not-visible`）、`click.sh <x> <y>` 与 `click.sh --activate <AppName>`。
-退出码：0=成功，1=未定位/页面不稳定，2=危险词拒绝，3=Vision/截图失败。**前置权限**：终端需「屏幕录制」（截图）+「辅助功能」（点击）。
-**首次使用、报 Vision 失败或坐标偏移时必读** `references/macos-smart.md`（完整命令表、护栏阈值 `SMART_MIN_CONF`、排障）。
-
-## Appium 命令（<S>/scripts/appium/ — iOS 真机 / macOS 实验）
-
-无障碍语义定位（同 Maestro 思路），Appium 3 + W3C WebDriver。命令：`doctor.sh`、`source.sh`（导出 page source 排查元素可否寻址）、`tap.sh`、`assert.sh`（0=成立，1=失败，3=驱动/会话错误）、`flow.sh`（真机多步**必须**走单会话 flow）、`wda_prepare.sh` / `wda_sign.sh`（离线准备真机 WDA）。
-⚠️ **不可逆副作用**：路线 A 自动签名会在设备未注册时**自动注册设备**（占用团队年度设备额度）并创建/更新描述文件。iOS 真机需 `IOS_TEAM_ID`；设备上必须是 **profile/release** 包（Flutter debug 包 JIT 受限，page source 无业务元素）。
-**首次接 iOS 真机必读** `references/appium-ios-device.md`（前置、路线 A/B、xctestrun 约束、mac2 与 Flutter 桌面已知限制）。
-
-**输入纪律（2026-11-12 起）**：`driver.py find-type` 与 flow 的 `{"type":"type"}` 步骤**默认先清空再输入**，
-输入后读 `attribute/value` 校验（不符重试一次，仍不符 rc=1）。全量替换是默认语义 —— 需要追加时显式写
-`--no-clear`（CLI）或 `{"clear": false}`（步骤）；**追加语义不自动重试**（重试会变成「旧值+文本+文本」）。
-密码框加 `--mask`（只比长度）。平台会转换输入时用 `--expect "<期望读回值>"` 额外断言一次（掩码只比长度）。
-敏感值用
-`--text-from <文件>`（0600）而不是 `--text`，避免密码进会话记录。⚠️ `POST /element/{eid}/clear` 对
-Flutter 输入框的可靠性仍是**未验证假设**：不可用时自动回退「按当前长度发退格键」。
 
 ## iOS 模拟器（<S>/scripts/ios/）
 
@@ -457,32 +363,13 @@ Flutter 输入框的可靠性仍是**未验证假设**：不可用时自动回�
 flutter test integration_test/<file>.dart -d <simulator_udid>
 ```
 
-## macOS（<S>/scripts/macos/）
+## 其他平台（Appium / macOS / Windows）
 
-| 命令 | 说明 |
-|---|---|
-| `build.sh [flutter build 参数]` | `flutter build macos`（透传；**未指定模式则补 `--debug`**；无参默认 `--debug`） |
-| `run.sh` | 直接执行二进制，stdout → build/debug/app.log |
-| `logs.sh [行数] [关键词]` | tail app.log |
-| `shot.sh` | `screencapture -x -D 1` 主屏全屏（终端需「屏幕录制」权限，否则黑图） |
-| `click.sh <x> <y>` | 屏幕 point 坐标点击（需「辅助功能」权限 + cliclick 推荐） |
-| `smart_tap.sh "<关键词>"` | 智能点击（截图→Vision→换算→点击，含安全护栏） |
-| `smart_assert.sh "<关键词>"` | 智能断言可见性 |
+命令表与排障见 `references/platform-extra.md`。执行前必记三条：
 
-UI 自动化：优先 `smart_tap.sh`（Vision 定位 + Retina 换算 + 安全护栏）；仅简单场景才用 AppleScript；代码级测试用 integration_test。
-
-## Windows（<S>/scripts/windows/*.ps1）
-
-仅在 Windows 机器上执行（Flutter Windows 产物无法跨平台构建）。PowerShell 用法：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File <S>\scripts\windows\build.ps1
-powershell -ExecutionPolicy Bypass -File <S>\scripts\windows\run.ps1     # stdout → build\debug\app.log
-powershell -ExecutionPolicy Bypass -File <S>\scripts\windows\logs.ps1 [-Tail 200] [-Filter 关键词]
-powershell -ExecutionPolicy Bypass -File <S>\scripts\windows\shot.ps1
-```
-
-首次在 Windows 机使用前，按 `references/windows-setup.md` 验证环境。
+- **Appium 不可逆副作用**：路线 A 自动签名会在设备未注册时自动注册设备（占用团队年度额度）并创建/更新描述文件；iOS 真机需 `IOS_TEAM_ID`，且必须是 profile/release 包（debug 包 JIT 受限）。
+- **Appium 输入纪律**：默认先清空再输入并读回校验；追加须显式 `--no-clear` / `{"clear": false}` 且不自动重试；密码用 `--mask`，敏感值用 `--text-from <文件>`。
+- **macOS 智能点击**：`smart_tap.sh` / `smart_assert.sh` 含护栏（置信度 <0.7、危险词、loading/白屏时拒点）；需「屏幕录制」+「辅助功能」权限；排障读 `references/macos-smart.md`。
 
 ## 测试分层策略
 
