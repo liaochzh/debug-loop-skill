@@ -41,16 +41,47 @@ if [ -z "${ANDROID_APP_ID:-}" ]; then
   exit 1
 fi
 
+# 在线设备序列号（一行一个）。**本文件内只此一处口径**（require_device 专用）。
+#   maestro/_common.sh 的 resolve_device 走同一优先级（ANDROID_SERIAL > 首台），但它是独立脚本家族、
+#   不 source 本文件，且**不校验在线**（指定了不在线的号会原样透传给 Maestro，由它报错）——
+#   改这里的解析口径时，需同步 scripts/maestro/_common.sh。
+online_serials() {
+  adb devices 2>/dev/null | awk 'NR>1 && $2=="device"{print $1}' || true
+}
+
 # 检测在线设备并回显设备 ID，无设备时非零退出
 require_device() {
-  local device
-  device=$(adb devices | grep -w "device$" | head -1 | awk '{print $1}' || true)
-  if [ -z "$device" ]; then
-    echo "❌ 没有检测到 Android 设备" >&2
-    adb devices >&2
+  local device found=0 online _o _d
+  # 多设备（模拟器 + 真机同时在线）时 `adb devices` 的**首台**不一定是目标机，而本 skill 全线用
+  #   `adb -s $DEVICE` ⇒ adb 自身的 ANDROID_SERIAL 约定不会生效。这里显式支持它（只认 **shell 环境变量**，
+  #   写进 .debug.env 无效：解析器对未知键是 warn+忽略）：
+  #   显式指定（在线）> 首台；指定的设备不在线则**失败关闭**，不静默退回首台（否则会打错设备）。
+  #   2026-11-12 真机实测：ZY22GT4HNG 排在 emulator-5554 前，脚本全线改打真机。
+  if [ -n "${ANDROID_SERIAL:-}" ]; then
+    online=$(online_serials)
+    _o="${online//$'\n'/ }"
+    # 逐行逐字比对：不分词、不展开通配符（设备号来自环境变量；`ANDROID_SERIAL='*'` 之类不得误匹配）。
+    #   here-string 不产生子 shell，found 在当前作用域可见（禁「管道喂 while read」的赋值丢失）
+    while IFS= read -r _d; do
+      if [ "$_d" = "$ANDROID_SERIAL" ]; then found=1; break; fi
+    done <<< "$online"
+    if [ "$found" -eq 1 ]; then
+      printf '%s\n' "$ANDROID_SERIAL"
+      return 0
+    fi
+    echo "❌ ANDROID_SERIAL=${ANDROID_SERIAL} 不在线（在线设备: ${_o:-无}）" >&2
+    adb devices >&2 || true
     exit 1
   fi
-  echo "$device"
+  device=$(online_serials)
+  # 取首行：用参数扩展而非 `| head -1`（pipefail 下 head 提前退出会让上游吃 SIGPIPE ⇒ 假失败）
+  device="${device%%$'\n'*}"
+  if [ -z "$device" ]; then
+    echo "❌ 没有检测到 Android 设备" >&2
+    adb devices >&2 || true
+    exit 1
+  fi
+  printf '%s\n' "$device"
 }
 
 # 原子写锁文件（避免并发截断）：atomic_write_lock <lock文件> <内容>

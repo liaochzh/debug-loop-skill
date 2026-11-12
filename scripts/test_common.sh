@@ -12,6 +12,8 @@
 #         非 Flutter 工程可用性 / build.sh 早退 / resolve_apk 降级 / bg.sh 负控。
 # 所有用例在临时目录构造夹具 + adb 桩，不触碰真实工程、不需要真机。
 set -uo pipefail   # 故意不加 -e：单例失败要继续跑完其余用例
+# 隔离外部环境：ambient ANDROID_SERIAL 会让 require_device 改选设备 ⇒ 桩里没这台，整套用例集体变异
+unset ANDROID_SERIAL
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
@@ -582,6 +584,39 @@ STUB
   OUT="$(PATH="$G13BIN:$PATH" bash -c 'source "$1"; list_ios_devices' _ "$SKILL_DIR/scripts/_ios_device.sh" 2>&1)"; RC=$?
   expect_rc          "G13 四级全失败 ⇒ rc=1（契约）" 1 "$RC"
   expect_not_contains "G13 四级全失败 ⇒ 空输出（不编造设备）" "00008101" "$OUT"
+  echo ""
+fi
+
+# ---------- G14 require_device 多设备选择（ANDROID_SERIAL） ----------
+if run_case "G14-device-serial"; then
+  P="$(mktemp -d "$TMPROOT/g14.XXXXXX")"
+  printf 'ANDROID_APP_ID=com.test.app\n' > "$P/.debug.env"
+  G14BIN="$TMPROOT/g14bin"; mkdir -p "$G14BIN"
+  # 两台设备同时在线，且**真机排在模拟器之后**（2026-11-12 真机实测的顺序：脚本曾全线打错设备）
+  cat > "$G14BIN/adb" <<'STUB'
+#!/bin/bash
+if [ "${1:-}" = "devices" ]; then
+  printf 'List of devices attached\nemulator-5554\tdevice\nR58M00TEST1\tdevice\n'
+  exit 0
+fi
+exit 0
+STUB
+  chmod +x "$G14BIN/adb"
+
+  OUT="$(cd "$P" && PATH="$G14BIN:$PATH" bash -c 'source "$1"; require_device' _ "$SKILL_DIR/scripts/android/_common.sh" 2>&1)"; RC=$?
+  expect_rc          "G14 未指定 ANDROID_SERIAL ⇒ rc=0" 0 "$RC"
+  expect_contains    "G14 未指定 ⇒ 沿用旧语义取首台" "emulator-5554" "$OUT"
+  expect_not_contains "G14 未指定 ⇒ 不擅自跳到第二台" "R58M00TEST1" "$OUT"
+
+  OUT="$(cd "$P" && ANDROID_SERIAL=R58M00TEST1 PATH="$G14BIN:$PATH" bash -c 'source "$1"; require_device' _ "$SKILL_DIR/scripts/android/_common.sh" 2>&1)"; RC=$?
+  expect_rc          "G14 指定在线真机 ⇒ rc=0" 0 "$RC"
+  expect_contains    "G14 指定在线真机 ⇒ 返回该设备" "R58M00TEST1" "$OUT"
+  expect_not_contains "G14 指定后不再回落到首台" "emulator-5554" "$OUT"
+
+  # 指定的设备不在线 ⇒ 失败关闭（静默退回首台会「打错设备」且没人发现）
+  OUT="$(cd "$P" && ANDROID_SERIAL=ghost-9999 PATH="$G14BIN:$PATH" bash -c 'source "$1"; require_device' _ "$SKILL_DIR/scripts/android/_common.sh" 2>&1)"; RC=$?
+  expect_rc       "G14 指定设备不在线 ⇒ rc=1" 1 "$RC"
+  expect_contains "G14 明确指出不在线" "ANDROID_SERIAL=ghost-9999 不在线" "$OUT"
   echo ""
 fi
 

@@ -96,7 +96,16 @@ resolve_app_id() {
 resolve_device() {
   case "$1" in
     android)
-      adb devices 2>/dev/null | grep -w "device$" | head -1 | awk '{print $1}' || true
+      # 与 android/_common.sh 的 require_device 同优先级：显式 ANDROID_SERIAL 优先，否则取首台。
+      #   否则多设备时 input.sh 打一台、maestro flow 打另一台，断言与输入落在不同设备上（静默假绿）。
+      #   ⚠️ 本处**不校验在线**（这是独立脚本家族，不 source android/_common.sh）：指定了不在线的号
+      #   会原样透传，由 Maestro 自己报错；要失败关闭的强校验请用 require_device。
+      if [ -n "${ANDROID_SERIAL:-}" ]; then
+        printf '%s\n' "$ANDROID_SERIAL"
+        return 0
+      fi
+      # 与 android/_common.sh 的 online_serials 保持同一解析口径（改一处要同步另一处）
+      adb devices 2>/dev/null | awk 'NR>1 && $2=="device"{print $1}' | head -1 || true
       ;;
     ios)
       xcrun simctl list devices booted 2>/dev/null \

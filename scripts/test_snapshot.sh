@@ -8,6 +8,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PARSE="$SCRIPT_DIR/_snapshot_parse.py"
 TMP="$(mktemp -d)"
+# 隔离外部环境：ambient ANDROID_SERIAL 会让 require_device 改选设备 ⇒ 桩里没这台，整套用例集体变异
+unset ANDROID_SERIAL
 trap 'rm -rf "$TMP"' EXIT
 
 PASS=0

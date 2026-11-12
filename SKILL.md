@@ -29,6 +29,10 @@ metadata:
 ## 执行约定
 
 - 所有脚本必须从**项目根**执行（按 `$PWD` 查找 `.debug.env`，产物写入项目 `build/debug/`）
+- **多设备（模拟器 + 真机同时在线）**：脚本默认取 `adb devices` 首台；要指定就带环境变量
+  `ANDROID_SERIAL=<设备id>`（`android/*`、`snapshot.sh`、`tap_verify.sh`、`maestro/flow.sh` 同口径；无需拔线/关模拟器）。
+  指定的设备不在线 ⇒ **直接失败**，不会静默换机。
+  > 只认 **shell 环境变量**：写进 `.debug.env` 无效（那是项目常量档，未知键会被忽略并告警）。
 - 调用形式：`bash <S>/scripts/safe_run.sh [--profile P] -- bash <S>/scripts/<platform>/<script>.sh [args]`
   （沙箱入口为唯一形态；`<S>` 软链与 realpath 两形态都在白名单，见「权限纪律」）
   > 下文各平台命令表里的 `bash <S>/scripts/…` 示例均为**裸形态**；实际执行时**一律**前置入口：`bash <S>/scripts/safe_run.sh [--profile P] -- <该命令>`（profile 放行清单见 `references/permission-discipline.md`）。
@@ -161,7 +165,7 @@ metadata:
 
 单元测试与平台无关：`bash <S>/scripts/test.sh [路径]`。
 脚本层回归**统一入口**（不需真机）：`bash <S>/scripts/test_all.sh`（rc `0` 全过 / `1` 有失败 / `2` 用法错）。
-默认串联七项：`test_common.sh`（.debug.env 解析 + Android 非 Flutter 支持）、`test_bg.sh -f 静态`（语法 + 多字节隐患）、`test_snapshot.sh`（快照解析 + 断言 + 点击选点/缓存 + `--diff` 变化判定 + 断言失败附 diff + `--wait` 轮询 + `--single-dump`/`--cache-payload`，296 项离线用例）、`test_safe_run.sh`（沙箱入口负控制：凭证面/写面/出网面/fail-closed/真机通道/build profile 的 SDK 缓存（含软链解析）与 trustd，**43 项**；非 macOS 自动跳过）、`test_build_metrics.sh`（`INTERNAL_METRICS` 内测包状态机：注入/还原/pending/sha 守卫/模式沿用，**27 项**，stub 构建、非 macOS 与沙箱内跳过）、`test_ios_common.sh`（`ios/_common.sh` 纯函数：syslog 行正则转义与头部锚定、App 可执行名四级回退，**12 项**）、`test_interact.sh`（输入/点击回执/坑表：`input.sh` 逐 rc + 清空/掩码/`--append`/`--text-from`、`tap_verify.sh` 的「已变不重点」「危险词禁二击」、`pitfall_append.sh` 去重，adb 桩会在 `ui.xml` 上真改内容）；加 `--full` 额外跑 `test_bg.sh` 全量行为用例（较慢）。
+默认串联七项：`test_common.sh`（.debug.env 解析 + Android 非 Flutter 支持）、`test_bg.sh -f 静态`（语法 + 多字节隐患）、`test_snapshot.sh`（快照解析 + 断言 + 点击选点/缓存 + `--diff` 变化判定 + 断言失败附 diff + `--wait` 轮询 + `--single-dump`/`--cache-payload`，296 项离线用例）、`test_safe_run.sh`（沙箱入口负控制：凭证面/写面/出网面/fail-closed/真机通道/build profile 的 SDK 缓存（含软链解析）与 trustd，**43 项**；非 macOS 自动跳过）、`test_build_metrics.sh`（`INTERNAL_METRICS` 内测包状态机：注入/还原/pending/sha 守卫/模式沿用，**27 项**，stub 构建、非 macOS 与沙箱内跳过）、`test_ios_common.sh`（`ios/_common.sh` 纯函数：syslog 行正则转义与头部锚定、App 可执行名四级回退，**12 项**）、`test_interact.sh`（输入/点击回执/坑表：`input.sh` 逐 rc + 清空/掩码/`--append`/`--text-from`/`--editable-index`/占位符哨兵探测、`tap_verify.sh` 的「已变不重点」「危险词禁二击」、`pitfall_append.sh` 去重，**137 项**，adb 桩会在 `ui.xml` 上真改内容）；加 `--full` 额外跑 `test_bg.sh` 全量行为用例（较慢）。
 离线用例的测试钩子（正常使用不要设）：`SNAPSHOT_INPUT=<xml|csv>`（`snapshot.sh` 跳过 dump 走完整解析/写缓存路径）、`SNAPSHOT_BIN=<script>`（`assert_page.sh` / `tap_snapshot.sh` 替换取快照；`assert_page --wait` 通过后的 `--cache-payload` 落盘仍走真实脚本）。
 
 ## 长任务后台模式（bg.sh）

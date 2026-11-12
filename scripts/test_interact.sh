@@ -12,6 +12,8 @@
 #   tap_verify.sh rc=0/1/2/3 与「页面已变不再点」「危险词禁二击」「--allow-danger」
 #   pitfall_append.sh 追加/去重/用法错/竖线转义
 set -uo pipefail
+# 隔离外部环境：ambient ANDROID_SERIAL 会让 require_device 改选设备 ⇒ 桩里没这台，整套用例集体变异
+unset ANDROID_SERIAL
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
@@ -243,6 +245,16 @@ PY
     exit 0 ;;
   pull)
     dst="${2:-}"
+    # AB_EMPTY_FROM_PULL=N：第 N 次及之后的 pull 一律给空语义树 ⇒ 驱动「探测阶段空树」分支
+    #   （用于证明 rc=4 不会被折叠成「清空失败 rc=5」）
+    if [ -n "${AB_EMPTY_FROM_PULL:-}" ]; then
+      pc=$(cat "$STATE/pullcnt" 2>/dev/null || printf '0'); pc=$((pc + 1)); printf '%s' "$pc" > "$STATE/pullcnt"
+      if [ "$pc" -ge "$AB_EMPTY_FROM_PULL" ]; then
+        # 必须是「raw>0 但过滤后 0 节点」（解析器钉死的 rc=4 判据）；全空 hierarchy 会被判成观测失败 rc=1
+        printf '<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>\n<hierarchy rotation="0">\n  <node index="0" text="" resource-id="" class="android.view.View" package="com.example.demo" clickable="false" bounds="[0,0][1080,1920]" />\n</hierarchy>\n' > "$dst"
+        exit 0
+      fi
+    fi
     # AB_ADD_EDITABLE=1：第一次输入/清空之后，**读回帧**里多出一个可编辑框（弹层激活/字段增减）
     # ⇒ 序号身份失效，必须按读回失败处理（ui.xml 本体不变，保证这不是「页面真的变了」的另一种解释）
     if [ "${AB_ADD_EDITABLE:-0}" = "1" ] && [ -f "$STATE/wrote" ]; then
@@ -476,6 +488,17 @@ if run_case "I3-flow"; then
   S=$(fresh_state "old")
   OUT=$(run_in "$P" "$S" AB_HINT_ON_EMPTY=1 AB_CLEAR_FAIL=1 -- bash "$SCRIPT_DIR/android/input.sh" --field account --clear-only 2>&1); RC=$?
   expect_rc "I3 hint 模式 + 真残留 → rc=5" 5 "$RC"
+
+  # 探测阶段空树 ⇒ rc=4（不能折叠成「清空失败 rc=5」，否则排障引向 IME 掉字）
+  S=$(fresh_state "请输入账号")
+  OUT=$(run_in "$P" "$S" AB_HINT_ON_EMPTY=1 AB_EMPTY_FROM_PULL=5 -- bash "$SCRIPT_DIR/android/input.sh" --field account --clear-only 2>&1); RC=$?
+  expect_rc "I3 探测阶段空树 → rc=4（不折叠成 5）" 4 "$RC"
+  # 阈值 5 才落在**探测**那次读回（snapshot.sh 每次 dump 是 2 次 pull：定位 1-2、外层读回 3-4、探测 5-6），
+  #   否则会提前撞上「校验阶段」的既有 rc=4 出口，本用例就成了假绿
+  expect_contains "I3 空树由探测阶段报出" "探测阶段" "$OUT"
+  expect_contains "I3 空树提示 Semantics" "Semantics" "$OUT"
+  expect_not_contains "I3 探测阶段不被说成清空失败" "清空后无法读回" "$OUT"
+  expect_contains "I3 提醒哨兵可能残留" "残留 1 个字符" "$OUT"
 
   # 占位符不影响替换流程（读回比的是输入值，不是 hint）
   S=$(fresh_state "请输入账号")

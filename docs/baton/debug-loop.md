@@ -102,7 +102,7 @@
 - **无 text/id 的输入框无法定位、也无法读回**：真机 App 登录页两个 EditText 都是 `text=""`、无 resource-id；
   用「上一次的输入内容」当 `--field` 时，内容一替换读回就找不到框（实测 rc=5）。
   修法：新增 `--editable-index N`（页面上第 N 个可编辑框，上→下排序），定位与读回都用它。
-- 门禁：`test_interact.sh` **132 项**、`test_all.sh` 七项全绿。
+- 门禁：`test_interact.sh` **137 项**、`test_common.sh` **120 项**、`test_all.sh` 七项全绿。
 
 ### 真机验证结论（2026-11-12 第二轮：Android 12 真机 moto_g_pure `ZY22GT4HNG`）
 
@@ -140,6 +140,16 @@
   （实测 `ZY22GT4HNG` 排在 `emulator-5554` 前，脚本全线改打真机）⇒ 要么只留目标设备，要么先 `adb devices` 核实。
 - **autoDebug 子代理的模型 `opencode-go/beam-free#high` 在本机被地域拦截**（`This model is not available in your country`，
   两次派发均失败）⇒ 需真机回归时先确认该 agent 的模型可用，否则由主会话按机械命令接手。
+
+### 多设备选择（2026-11-12 第二轮）
+- `require_device` 现支持 `ANDROID_SERIAL`：显式指定（在线）> 首台；**指定但不在线 ⇒ 直接失败**（不静默换机）。
+  只认 **shell 环境变量**（写 `.debug.env` 会被 `_env.sh` 当未知键忽略）；`maestro/_common.sh` 的 `resolve_device`
+  同优先级但**不校验在线**（由 Maestro 报错），改解析口径要两处同步。
+- 解析统一到 `online_serials()`（`awk 'NR>1 && $2=="device"'`），不再各自 `grep -w "device$"`。
+- 比较用逐行逐字（here-string + `[ "$d" = "$ANDROID_SERIAL" ]`），避免 glob 误匹配（`ANDROID_SERIAL='*'` 实测失败关闭）。
+- 四个涉 adb 桩的测试套件 + `test_all.sh` 顶部 `unset ANDROID_SERIAL`（否则开发机 export 过该变量会集体变异）。
+- `--clear-only` 探测阶段的空树不再折成 rc=5：`probe_hint_only` 返回 4 时透传 rc=4，并提示哨兵可能残留 1 字符。
+  ⚠️ 调用点必须写成 `if fn; then rc=0; else rc=$?; fi` —— 函数体内会 `set -e`，用 `set +e; fn; rc=$?` 会静默 exit 1。
 
 ## 发布（推送到 GitHub）
 - 本机权限层对所有 agent 硬性 deny `git push*`（build / autoDebug / commit 档），**不要反复重试**；agent 唯一发布入口是白名单脚本：

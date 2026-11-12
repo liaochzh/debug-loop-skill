@@ -11,6 +11,8 @@
 # 覆盖点：退出码契约 / 参数守卫 / detach 行为 / clamp / usage 边界 / F2 空值路径 /
 #         多字节隐患 / 常用子命令。所有用例在临时目录构造假项目，不触碰真实工程。
 set -uo pipefail   # 故意不加 -e：单例失败要继续跑完其余用例
+# 隔离外部环境：ambient ANDROID_SERIAL 会让 require_device 改选设备 ⇒ 桩里没这台，整套用例集体变异
+unset ANDROID_SERIAL
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"   # -P：解析软链，确保 ../../ 能回到仓库根
 BG="$SCRIPT_DIR/bg.sh"

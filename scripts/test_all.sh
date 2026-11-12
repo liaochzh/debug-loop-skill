@@ -16,6 +16,10 @@
 #   - 任一子项非零即判失败，但仍跑完其余子项（便于一次看全）。
 set -uo pipefail   # 故意不加 -e：单个子项失败要继续跑完其余子项
 
+# 防御纵深：ambient ANDROID_SERIAL 会让 require_device 改选设备 ⇒ 各子套件的 adb 桩对不上。
+#   子套件自己也 unset 过一遍，这里再兜一层（新增套件不必各自记得）。
+unset ANDROID_SERIAL
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 
 FULL=0; VERBOSE=0

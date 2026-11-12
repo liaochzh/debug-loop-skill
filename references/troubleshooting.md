@@ -35,7 +35,7 @@
 | `settle.sh` 返回 rc=3 | **判定不可信**（仅 `--mode ui`）：语义树无内容或 dump 持续失败，**不是**「页面已静止」 | 去掉 `--mode ui` 用默认 `auto`（自动降级整屏像素），或显式 `--mode screen`；⚠️ rc=3 ≠ `bg.sh` 的 3（LOST） |
 | `findtap.sh` 首屏就报「语义树无内容」rc=1 | Flutter 未暴露语义树 ⇒ 滑动查找**不可能**命中，故不白滑 `--max` 屏 | 按输出三级降级：`maestro/tap.sh` → Vision 定位 → `shot.sh` + 坐标 `tap.sh`（须先截图确认） |
 | `settle.sh` 报「整屏截图始终不可用」rc=1 | screen 阶段 **screencap 一帧都没取到**（命令失败/0 字节），属「判据不可用」而非「页面在动」 | 先 `shot.sh` 验证能否截图；确认是 `screencap -p` 不被支持时改用 `maestro/assert.sh` 轮询或 `logwatch.sh <签名>`，别加大 `--timeout`（无效） |
-| 多设备抢焦点 | 脚本默认取第一台（`require_device` 取 `adb devices` 首个 `device`，**不读** `ANDROID_SERIAL`） | 只留目标设备；或先 `adb devices` 核实首台就是目标（模拟器 + 真机同时在线时首台不一定是你要的那台） |
+| 多设备抢焦点 | 脚本取 `adb devices` 首个 `device`，除非显式给了 `ANDROID_SERIAL` | 多台同时在线时用 `ANDROID_SERIAL=<id> bash <S>/scripts/...`（**只认 shell 环境变量**，写 `.debug.env` 会被当未知键忽略；指定的设备不在线会直接失败，不静默换机）；不指定时先 `adb devices` 核实首台就是目标 |
 
 ## C2. 输入框类（输错 / 没输进去 / 反复粘贴）
 

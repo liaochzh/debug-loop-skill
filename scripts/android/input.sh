@@ -385,7 +385,7 @@ read_back() {  # <bounds> <field> <id> [editable_index] [editable_total] → std
 #   「--clear-only 读回非空」有两种可能：真有残留 / 读到的其实是 hint。用哨兵区分：
 #   在（已清空的）框里输入 1 个字符，若读回**只剩该字符** ⇒ hint 消失 ⇒ 之前为空。
 #   哨兵随后按光标位置删 1 次还原（探测只在明确「读回非空」时才发，不影响正常替换流程）。
-# rc: 0 = 判定为空（hint）/ 1 = 有内容或无法判定
+# rc: 0 = 判定为空（hint）/ 1 = 有内容或无法判定 / 4 = 语义树为空（向上透传，调用方报 rc=4）
 probe_hint_only() {  # <bounds> <field> <id> <after> [editable_index] [editable_total]
   local bounds="$1" field="$2" nid="$3" after="$4" want_edit="${5:-0}" want_etotal="${6:-0}"
   local sentinel rb=0 probe_after="" vrc=0
@@ -409,6 +409,9 @@ probe_hint_only() {  # <bounds> <field> <id> <after> [editable_index] [editable_
         || echo "⚠️ 哨兵清理（DEL）失败 ⇒ 框内可能残留 1 个字符，请复核" >&2
     fi
     if [ "$rb" -ne 0 ]; then
+      # rc=4 是「语义树为空」，与「读回失败」不是一回事：直接透传（调用方给确定诊断），
+      #   不再先打一条「无法判定…」的警告，避免 stderr 两句话自相矛盾
+      [ "$rb" -eq 4 ] && return 4
       echo "⚠️ 哨兵后读回失败（rc=${rb}）⇒ 无法判定读回的是占位符还是残留内容" >&2
       return 1
     fi
@@ -573,7 +576,23 @@ if [ "$CLEAR_ONLY" = true ]; then
   fi
   # 读回非空有两种可能：真有残留 / 读到的是占位符 hint（空框的 text 被回填 hint）。
   # 默认用哨兵探测区分；关闭探测（--no-probe）时维持「读回非空 ⇒ 失败」。
-  if [ "$PROBE" = true ] && probe_hint_only "$BOUNDS" "$FIELD" "$NODE_ID" "$LEFT" "$EDIT_IDX" "$EDIT_TOTAL"; then
+  PROBE_RC=1
+  if [ "$PROBE" = true ]; then
+    # ⚠️ 必须放在 if 条件里取状态：probe_hint_only 内部会 `set -e`，直接调用时它一返回非零
+    #    errexit 立刻生效 ⇒ 静默 exit 1（2026-11-12 实测踩到）；if 条件上下文对 errexit 免疫
+    if probe_hint_only "$BOUNDS" "$FIELD" "$NODE_ID" "$LEFT" "$EDIT_IDX" "$EDIT_TOTAL"; then
+      PROBE_RC=0
+    else
+      PROBE_RC=$?
+    fi
+  fi
+  # rc=4 不能被折进 5（清空失败）：语义树为空是「查不了」，不是「没清掉」，混一起会把排障引向 IME 掉字
+  if [ "$PROBE_RC" -eq 4 ]; then
+    echo "❌ 探测阶段语义树塌陷（上一次读回仍有内容，重取后仍空）— 需 App 侧 Semantics 或改用 shot.sh + 坐标" >&2
+    echo "💡 探测已向框内发过哨兵按键，可能残留 1 个字符（a/1）⇒ 复核后按需再清一次" >&2
+    exit 4
+  fi
+  if [ "$PROBE_RC" -eq 0 ]; then
     echo "✅ 已清空（读回 '$(mask_out "$LEFT")' 是占位符 hint，不是残留内容）"
     log_interact clear-only "field=$FIELD" "bounds=$BOUNDS" "cleared=true" "hint_only=true" || true
     exit 0
