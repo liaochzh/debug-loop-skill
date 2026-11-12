@@ -66,21 +66,26 @@ fi
 if [ "${1:-}" = "-s" ]; then shift 2; fi
 cmd="${1:-}"; shift || true
 
-_edit_node() {  # <clear|append:…|set:…>
-  python3 - "$STATE/ui.xml" "$1" <<'PY'
-import re, sys
-p, mode = sys.argv[1], sys.argv[2]
+_edit_node() {  # <clear|append:…|set:…> [目标 resource-id]
+  python3 - "$STATE/ui.xml" "$1" "${2:-account}" <<'PY'
+import os, re, sys
+p, mode, target = sys.argv[1], sys.argv[2], sys.argv[3]
 s = open(p, encoding="utf-8").read()
+# AB_HINT_ON_EMPTY=1：模拟真机行为 —— 空的可编辑框在语义树里 text 回填 hint
+HINT = "请输入账号"
+hint_mode = os.environ.get("AB_HINT_ON_EMPTY") == "1"
+shift = os.environ.get("AB_SHIFT_BOUNDS") == "1"
 
 
 def repl(m):
     tag = m.group(0)
     cur = re.search(r'text="([^"]*)"', tag)
     cur = cur.group(1) if cur else ""
+    base = "" if (hint_mode and cur == HINT) else cur
     if mode == "clear":
-        new = ""
+        new = HINT if hint_mode else ""
     elif mode.startswith("append:"):
-        new = cur + mode[len("append:"):]
+        new = base + mode[len("append:"):]
     elif mode.startswith("set:"):
         new = mode[len("set:"):]
     else:
@@ -89,11 +94,47 @@ def repl(m):
         tag = re.sub(r'text="[^"]*"', 'text="%s"' % new, tag, count=1)
     else:
         tag = tag.replace("<node", '<node text="%s"' % new, 1)
+    if shift:
+        # 模拟 IME 弹出导致布局位移：bounds 整体下移 40px ⇒ 读回必须靠「可编辑框序号」重新定位
+        def mv(mm):
+            x1, y1, x2, y2 = (int(v) for v in mm.groups())
+            return 'bounds="[%d,%d][%d,%d]"' % (x1, y1 + 40, x2, y2 + 40)
+        tag = re.sub(r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', mv, tag, count=1)
     return tag
 
 
-s = re.sub(r'<node[^>]*resource-id="account"[^>]*>', repl, s)
+s = re.sub(r'<node[^>]*resource-id="%s"[^>]*>' % re.escape(target), repl, s)
 open(p, "w", encoding="utf-8").write(s)
+PY
+}
+
+# 最后一次点击坐标落在哪个可编辑节点上（桩按点击位置决定「当前聚焦框」，
+# 这样 --editable-index 2 之类才会写到第二个框）
+_last_target() {
+  local line x y
+  line=$(tail -1 "$STATE/taps" 2>/dev/null || true)
+  [ -n "$line" ] || { printf 'account'; return 0; }
+  x=${line%% *}; y=${line##* }
+  python3 - "$STATE/ui.xml" "$x" "$y" <<'PY'
+import re, sys
+xml, xs, ys = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    x, y = int(xs), int(ys)
+except ValueError:
+    print("account"); raise SystemExit
+s = open(xml, encoding="utf-8").read()
+for m in re.finditer(r'<node[^>]*>', s):
+    tag = m.group(0)
+    if 'class="android.widget.EditText"' not in tag:
+        continue
+    rid = re.search(r'resource-id="([^"]+)"', tag)
+    b = re.search(r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', tag)
+    if not rid or not b:
+        continue
+    x1, y1, x2, y2 = (int(v) for v in b.groups())
+    if x1 <= x <= x2 and y1 <= y <= y2:
+        print(rid.group(1)); raise SystemExit
+print("account")
 PY
 }
 
@@ -106,6 +147,8 @@ _handle_text() {  # <原始命令串里的文本部分>
     val="$(python3 -c 'import sys;print("\u2022" * len(sys.argv[1]))' "$val")"
   fi
   [ "${AB_DROP_LAST:-0}" = "1" ] && val="${val%?}"
+  # 数字/手机号键盘会丢掉字母：驱动「哨兵 a 被拒 ⇒ 换数字哨兵」这条分支
+  [ "${AB_REJECT_ALPHA:-0}" = "1" ] && [ "$val" = "a" ] && return 0
   if [ "${AB_EMPTY_ON_TEXT:-0}" = "1" ]; then
     # 输入后语义树变空（导航中间态）⇒ 校验阶段应 rc=4，不能混成「读回不符 rc=6」
     cat > "$STATE/ui.xml" <<'XML'
@@ -116,7 +159,8 @@ _handle_text() {  # <原始命令串里的文本部分>
 XML
     return 0
   fi
-  _edit_node "append:${val}"
+  _edit_node "append:${val}" "$(_last_target)"
+  : > "$STATE/wrote"
 }
 
 case "$cmd" in
@@ -185,7 +229,8 @@ PY
             [ $# -gt 0 ] || exit 255
             printf '%s\n' "$*" >> "$STATE/keys"
             if printf '%s' "$*" | grep -q 67; then
-              [ "${AB_CLEAR_FAIL:-0}" = "1" ] || _edit_node clear
+              : > "$STATE/wrote"
+              [ "${AB_CLEAR_FAIL:-0}" = "1" ] || _edit_node clear "$(_last_target)"
             fi
             exit 0 ;;
         esac
@@ -198,7 +243,21 @@ PY
     exit 0 ;;
   pull)
     dst="${2:-}"
-    cp "$STATE/ui.xml" "$dst" 2>/dev/null || exit 1
+    # AB_ADD_EDITABLE=1：第一次输入/清空之后，**读回帧**里多出一个可编辑框（弹层激活/字段增减）
+    # ⇒ 序号身份失效，必须按读回失败处理（ui.xml 本体不变，保证这不是「页面真的变了」的另一种解释）
+    if [ "${AB_ADD_EDITABLE:-0}" = "1" ] && [ -f "$STATE/wrote" ]; then
+      python3 - "$STATE/ui.xml" "$dst" <<'PY'
+import sys
+s = open(sys.argv[1], encoding="utf-8").read()
+if 'resource-id="extra"' not in s:
+    s = s.replace("</hierarchy>",
+                  '  <node index="7" text="" resource-id="extra" class="android.widget.EditText"'
+                  ' package="com.example.demo" content-desc="" clickable="true" bounds="[100,700][980,780]" />\n</hierarchy>')
+open(sys.argv[2], "w", encoding="utf-8").write(s)
+PY
+    else
+      cp "$STATE/ui.xml" "$dst" 2>/dev/null || exit 1
+    fi
     exit 0 ;;
   exec-out) printf '\211PNG\r\n\032\nFAKEPNG' ;;
   *) : ;;
@@ -228,6 +287,7 @@ fresh_state() {  # [account_text] → 状态目录（内含 ui.xml/taps/keys）
     <node index="0" text="${1:-}" resource-id="account" class="android.widget.EditText" package="com.example.demo" content-desc="" clickable="true" bounds="[100,400][980,500]" />
     <node index="1" text="登录" resource-id="btn_login" class="android.widget.Button" package="com.example.demo" content-desc="" clickable="true" bounds="[100,600][980,700]" />
     <node index="2" text="提交" resource-id="btn_submit" class="android.widget.Button" package="com.example.demo" content-desc="" clickable="true" bounds="[100,800][980,900]" />
+    <node index="3" text="" resource-id="password" class="android.widget.EditText" package="com.example.demo" content-desc="" clickable="true" bounds="[100,550][980,650]" />
   </node>
 </hierarchy>
 XML
@@ -246,10 +306,14 @@ XML
 }
 
 acct_text() {  # <ui.xml> → account 节点的 text
-  python3 - "$1" <<'PY'
+  node_text "$1" account
+}
+
+node_text() {  # <ui.xml> <resource-id> → 该节点的 text
+  python3 - "$1" "$2" <<'PY'
 import re, sys
 s = open(sys.argv[1], encoding="utf-8").read()
-m = re.search(r'<node[^>]*resource-id="account"[^>]*>', s)
+m = re.search(r'<node[^>]*resource-id="%s"[^>]*>' % re.escape(sys.argv[2]), s)
 if not m:
     print("<no-node>")
 else:
@@ -284,6 +348,12 @@ print(f.verify("a", "a"), f.verify("a", "b"), f.verify("ab", "cd", mask=True))
 print("append:", f.verify("abc", "oldabc", append=True), f.verify("abc", "oldab", append=True))
 print("append+mask:", f.verify("abc", "oldabcd", mask=True, append=True),
       f.verify("abc", "ol", mask=True, append=True))
+print("hint:", f.hint_verdict("Search settings", "a", "a"),
+      f.hint_verdict("Search settings", "Search settingsa", "a"),
+      f.hint_verdict("Search settings", "Search settings", "a"),
+      f.hint_verdict("", "a", "a"),
+      f.hint_verdict("hint", "A", "a"),
+      f.hint_verdict("1", "1", "1"))
 PY
 )
   expect_contains "I1 空值不清空" "(0, 0)" "$OUT"
@@ -293,6 +363,7 @@ PY
   expect_contains "I1 verify 三种情形" "True False True" "$OUT"
   expect_contains "I1 append 只判后缀" "append: True False" "$OUT"
   expect_contains "I1 append+mask 只判不短于" "append+mask: True False" "$OUT"
+  expect_contains "I1 hint 判别（空/有内容/无法判定/空读回/大写哨兵/无变化优先）" "hint: 0 1 3 0 0 3" "$OUT"
 fi
 
 # ---------- I2 input.sh 用法与取值 ----------
@@ -384,6 +455,34 @@ if run_case "I3-flow"; then
   OUT=$(run_in "$P" "$S" AB_CLEAR_FAIL=1 -- bash "$SCRIPT_DIR/android/input.sh" --field account --clear-only --mask 2>&1); RC=$?
   expect_rc "I3 --mask --clear-only 清空失败仍 → rc=5" 5 "$RC"
 
+  # 空框的 hint 会被语义树当成 text（AccessibilityNodeInfo 行为，真机/模拟器实测）
+  #   ⇒ --clear-only 读回非空时要用哨兵探测区分「hint」与「残留」
+  S=$(fresh_state "请输入账号")
+  OUT=$(run_in "$P" "$S" AB_HINT_ON_EMPTY=1 -- bash "$SCRIPT_DIR/android/input.sh" --field account --clear-only 2>&1); RC=$?
+  expect_rc   "I3 占位符 hint → --clear-only 判已清空 rc=0" 0 "$RC"
+  expect_contains "I3 说明读到的是占位符" "占位符" "$OUT"
+  expect_eq   "I3 哨兵已删除（只剩 hint）" "请输入账号" "$(acct_text "$S/ui.xml")"
+
+  S=$(fresh_state "请输入账号")
+  OUT=$(run_in "$P" "$S" AB_HINT_ON_EMPTY=1 -- bash "$SCRIPT_DIR/android/input.sh" --field account --clear-only --mask 2>&1); RC=$?
+  expect_rc "I3 占位符 + --mask → rc=0（不假绿也不假红）" 0 "$RC"
+
+  # 关掉探测 ⇒ 维持旧的「读回非空即失败」语义（可预期、可回退）
+  S=$(fresh_state "请输入账号")
+  OUT=$(run_in "$P" "$S" AB_HINT_ON_EMPTY=1 -- bash "$SCRIPT_DIR/android/input.sh" --field account --clear-only --no-probe 2>&1); RC=$?
+  expect_rc "I3 --no-probe 时 hint 仍判 rc=5" 5 "$RC"
+
+  # 真有残留内容时必须仍判失败（哨兵不能把失败洗成成功）
+  S=$(fresh_state "old")
+  OUT=$(run_in "$P" "$S" AB_HINT_ON_EMPTY=1 AB_CLEAR_FAIL=1 -- bash "$SCRIPT_DIR/android/input.sh" --field account --clear-only 2>&1); RC=$?
+  expect_rc "I3 hint 模式 + 真残留 → rc=5" 5 "$RC"
+
+  # 占位符不影响替换流程（读回比的是输入值，不是 hint）
+  S=$(fresh_state "请输入账号")
+  OUT=$(run_in "$P" "$S" AB_HINT_ON_EMPTY=1 -- bash "$SCRIPT_DIR/android/input.sh" --field account --text abc 2>&1); RC=$?
+  expect_rc "I3 hint 模式替换输入 → rc=0" 0 "$RC"
+  expect_eq "I3 hint 模式读回 abc" "abc" "$(acct_text "$S/ui.xml")"
+
   # 焦点状态拿不到 mInputShown 字段（部分 ROM）⇒ 只告警，不阻断正常输入
   S=$(fresh_state)
   OUT=$(run_in "$P" "$S" AB_NO_FOCUS=2 -- bash "$SCRIPT_DIR/android/input.sh" --field account --text abc 2>&1); RC=$?
@@ -447,6 +546,70 @@ if run_case "I3-flow"; then
   S=$(fresh_state "••")
   OUT=$(run_in "$P" "$S" AB_MASK_HIDE=1 -- bash "$SCRIPT_DIR/android/input.sh" --field account --text secret 2>&1); RC=$?
   expect_rc "I3 掩码字段不回退明文比对 → rc=6" 6 "$RC"
+fi
+
+# ---------- I5 --editable-index（无 text/id 的输入框） ----------
+if run_case "I5-editable"; then
+  echo "--- I5 --editable-index（Flutter 无 text/id 输入框） ---"
+  P=$(mk_proj i5)
+
+  S=$(fresh_state)
+  OUT=$(run_in "$P" "$S" -- bash "$SCRIPT_DIR/android/input.sh" --editable-index 1 --text abc 2>&1); RC=$?
+  expect_rc "I5 第 1 个可编辑框输入 → rc=0" 0 "$RC"
+  expect_eq   "I5 第 1 个框拿到 abc" "abc" "$(node_text "$S/ui.xml" account)"
+  expect_eq   "I5 第 2 个框未被写入" "" "$(node_text "$S/ui.xml" password)"
+
+  S=$(fresh_state)
+  OUT=$(run_in "$P" "$S" -- bash "$SCRIPT_DIR/android/input.sh" --editable-index 2 --text xyz 2>&1); RC=$?
+  expect_rc "I5 第 2 个可编辑框输入 → rc=0" 0 "$RC"
+  expect_eq   "I5 第 2 个框拿到 xyz" "xyz" "$(node_text "$S/ui.xml" password)"
+  expect_eq   "I5 第 1 个框未被写入" "" "$(node_text "$S/ui.xml" account)"
+
+  S=$(fresh_state)
+  OUT=$(run_in "$P" "$S" -- bash "$SCRIPT_DIR/android/input.sh" --editable-index 9 --text abc 2>&1); RC=$?
+  expect_rc "I5 序号越界 → rc=1" 1 "$RC"
+
+  S=$(fresh_state "old")
+  OUT=$(run_in "$P" "$S" -- bash "$SCRIPT_DIR/android/input.sh" --editable-index 1 --clear-only 2>&1); RC=$?
+  expect_rc "I5 --editable-index 清空 → rc=0" 0 "$RC"
+  expect_eq   "I5 清空后第 1 个框为空" "" "$(node_text "$S/ui.xml" account)"
+
+  S=$(fresh_state)
+  OUT=$(run_in "$P" "$S" -- bash "$SCRIPT_DIR/android/input.sh" --editable-index 1 --field account --text a 2>&1); RC=$?
+  expect_rc "I5 与 --field 互斥 → rc=2" 2 "$RC"
+
+  # hint + editable 组合：空框占位符也要能被判成「已清空」
+  S=$(fresh_state "请输入账号")
+  OUT=$(run_in "$P" "$S" AB_HINT_ON_EMPTY=1 -- bash "$SCRIPT_DIR/android/input.sh" --editable-index 1 --clear-only 2>&1); RC=$?
+  expect_rc "I5 hint + --editable-index 清空 → rc=0" 0 "$RC"
+  expect_eq   "I5 hint + editable 后只剩占位符" "请输入账号" "$(node_text "$S/ui.xml" account)"
+
+  # 数字键盘丢弃字母哨兵 ⇒ 换数字哨兵仍能判「占位符」
+  S=$(fresh_state "请输入账号")
+  OUT=$(run_in "$P" "$S" AB_HINT_ON_EMPTY=1 AB_REJECT_ALPHA=1 -- bash "$SCRIPT_DIR/android/input.sh" --editable-index 1 --clear-only 2>&1); RC=$?
+  expect_rc "I5 字母哨兵被拒 → 数字哨兵兜底 rc=0" 0 "$RC"
+
+  # 读回帧可编辑框数量变化 ⇒ 序号身份失效，必须按读回失败处理（不能假绿）
+  S=$(fresh_state)
+  OUT=$(run_in "$P" "$S" AB_ADD_EDITABLE=1 AB_SHIFT_BOUNDS=1 -- bash "$SCRIPT_DIR/android/input.sh" --editable-index 1 --text abc 2>&1); RC=$?
+  expect_rc "I5 可编辑框数量变化 → 读回失败 rc=6" 6 "$RC"
+  expect_contains "I5 说明数量变化" "可编辑框数量变了" "$OUT"
+
+  # 数量变化在 clear-only 路径同样必须拦住（P1 原始症状：空框被当成已清空）
+  S=$(fresh_state "old")
+  OUT=$(run_in "$P" "$S" AB_ADD_EDITABLE=1 AB_SHIFT_BOUNDS=1 -- bash "$SCRIPT_DIR/android/input.sh" --editable-index 1 --clear-only 2>&1); RC=$?
+  expect_rc "I5 clear-only 数量变化 → rc=5（不假绿）" 5 "$RC"
+
+  # --index 与 --editable-index 同用（无意义）⇒ 直接拒
+  S=$(fresh_state)
+  OUT=$(run_in "$P" "$S" -- bash "$SCRIPT_DIR/android/input.sh" --editable-index 1 --index 2 --text a 2>&1); RC=$?
+  expect_rc "I5 --index 与 --editable-index 同用 → rc=2" 2 "$RC"
+
+  # 读回身份改用序号：输入后 bounds 位移（IME 弹出）也不影响读回
+  S=$(fresh_state "support@example.com")
+  OUT=$(run_in "$P" "$S" AB_SHIFT_BOUNDS=1 -- bash "$SCRIPT_DIR/android/input.sh" --editable-index 1 --text test123 2>&1); RC=$?
+  expect_rc "I5 bounds 位移后仍能读回 → rc=0" 0 "$RC"
+  expect_eq   "I5 位移后替换后的值" "test123" "$(node_text "$S/ui.xml" account)"
 fi
 
 # ---------- I4 环境与空树 ----------

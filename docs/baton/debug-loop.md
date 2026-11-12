@@ -82,19 +82,52 @@
 
 ### 已完成
 - **单一判据源 `scripts/_field_target.py`**：清空次数 / 读回校验（`plan_clear`、`verify(append)`、`is_editable`、`--plan-clear`、`--id-only`、`total`）。改清空策略只改这一处。
-- **新增 `scripts/android/input.sh`（输入闭环）**：定位（`--field` 匹配 text/id 子串；`--id` 只匹配 id）→ 焦点自检（`dumpsys input_method` 三态）→ 清空（`MOVE_END` + `DEL`×(len+3)，单批 ≤64）→ 分段输入（≤20 字符/段）→ 读回校验 → 不符重试 1 次。凭据走 `--text-from .debug-login.secret`（0600，`init.sh` 生成并自动进 `.gitignore`）。rc：1 未找到 / 4 校验阶段空树 / 5 读回失败 / 6 读回不符 / 7 焦点未建立。
+- **新增 `scripts/android/input.sh`（输入闭环）**：定位（`--field` 匹配 text/id 子串；`--id` 只匹配 id；`--editable-index N` 按第 N 个可编辑框，供无 text/id 的 Flutter 输入框）→ 焦点自检（`dumpsys input_method` 三态）→ 清空（`MOVE_END` + `DEL`×(len+3)，单批 ≤64）→ 分段输入（≤20 字符/段）→ 读回校验（bounds → 可编辑序号/关键词 → 同 id/total）→ 不符重试 1 次；`--clear-only` 读回非空时做**占位符哨兵探测**（`--no-probe` 关）。凭据走 `--text-from .debug-login.secret`（0600，`init.sh` 生成并自动进 `.gitignore`）。rc：1 未找到 / 4 校验阶段空树 / 5 清空失败 / 6 读回不符 / 7 焦点未建立。
 - **新增 `scripts/tap_verify.sh`（点击 + 回执）**：settle → fresh 快照 → 定位 → 点击 → 断言 → **未过先判是否已生效**：`fp` 变化 ∨ 目标消失 ∨ 节点数变化 ⇒ 不再点第二次（rc=1 + diff）；仅文本集变化属弱证据（`--allow-weak` 放行）；危险词默认禁二击（`--allow-danger`）。`_tap_target` 的 rc=2/5/6 分流为 2/5/1。
 - **`scripts/appium/driver.py`**：`find-type` / flow 的 `type` 步 `clear` 缺省 **true**（唯一显式兼容性变更）；输入后读 `attribute/value` 校验；新增 `--expect`（平台会转换输入时额外断言；掩码只比长度）；`--append` 强制 `retries=0`。
 - **坑表沉淀**：`references/troubleshooting.md` C2（输入）/ C3（点击）；`references/maestro-flow-snippets.md` 片段 ③ 登录输入；`references/autoDebug-task-template.md` 新增 `<secret:KEY>` 与「点中判据」必填项；新增 `scripts/pitfall_append.sh`（项目配方 + 全局通用坑双轨）。
 - 门禁：`test_interact.sh` **104 项** rc=0（离线 adb 桩）；`test_bg.sh -f 静态` 67 脚本；`test_all.sh` 七项全绿。
 
 ### 未完成（须真机确认的四项假设）
-1. `POST /element/{eid}/clear` 在 Flutter 上是否真正清空（否则靠 DEL×N 回退长度是否够）。
-2. 各 ROM `dumpsys input_method` 的 `mInputShown` 是否存在/可靠（`=true` 通过 / `=false` 阻断 / 字段缺失仅告警）。
-3. 零键码 `adb input keyevent` 的真实 rc（`input.sh` 只按 rc 判，零键码是否恒 0）。
-4. Maestro `eraseText` 粒度与 `flow.sh` 变量注入（中文不可用 `adb input text`，rc=8 改走 Maestro）。
+1. ✅ 已验（模拟器 Android 15）：零键码 `adb input keyevent` 无参数 rc=255；`keyevent 123 67 67` rc=0。
+2. ✅ 已验（模拟器 Android 15 + 真机 Android 12）：`dumpsys input_method` 有 `mInputShown`，未聚焦 `false` / 聚焦 `true`。
+3. ✅ 已验（模拟器）：Maestro `eraseText: 3` 是**字符数**（`abcdef` → 剩 `abc`）。
+4. ⬜ 未验（无 iOS 真机签名条件）：`POST /element/{eid}/clear` 对 Flutter 是否真正清空（本机 iOS 证书/描述文件不覆盖已连设备）。
 
-验收口径：登录 + 一次导航，**操作轮次 ≤3**（不达标即视为本轮改动未生效）。
+验收口径：登录 + 一次导航，**操作轮次 ≤3**（不达标即视为本轮改动未生效）。Android 侧已在模拟器 + 真机 App（`com.xiaotunsmart.tonge` 登录页）上跑通输入闭环。
+
+### 真机验证（2026-11-12）发现并修掉的两个判据缺陷
+- **空框 hint 被当成 text**：uiautomator 对空的可编辑框把 hint 回填进 `text`（实测 `text="Search settings"`）⇒ `--clear-only` 假失败 rc=5。
+  修法：`_field_target.hint_verdict()` + `input.sh` 的**哨兵探测**（输入 1 字符再删，读回只剩该字符 ⇒ 判占位符）；`--no-probe` 可关（有副作用时）。
+- **无 text/id 的输入框无法定位、也无法读回**：真机 App 登录页两个 EditText 都是 `text=""`、无 resource-id；
+  用「上一次的输入内容」当 `--field` 时，内容一替换读回就找不到框（实测 rc=5）。
+  修法：新增 `--editable-index N`（页面上第 N 个可编辑框，上→下排序），定位与读回都用它。
+- 门禁：`test_interact.sh` **132 项**、`test_all.sh` 七项全绿。
+
+### 真机验证结论（2026-11-12 第二轮：Android 12 真机 moto_g_pure `ZY22GT4HNG`）
+
+设备：**真实 Android 12 真机**（不是模拟器），App = `com.xiaotunsmart.tonge` 登录页 + 系统设置搜索。
+
+| 项 | 结果 | 实测 |
+|---|---|---|
+| V1 `--editable-index 1 --text test123` | PASS | rc=0，读回 `test123`；第 2 框未被写入 |
+| V2 `--editable-index 1 --clear-only` | PASS | rc=0，读回为空（此 ROM 空框不回填 hint） |
+| V3 `--editable-index 2 --text abc123`（密码框，无 `--mask`） | FAIL→修 | rc=6，读回 `••••••`；**暴露缺陷**，见下 |
+| V3' 同上加 `--mask` | PASS | rc=0（仅比长度）；随后 `--clear-only` rc=0 |
+| V4 `--clear-only --no-probe` | PASS | rc=0（读回确实为空，关探测不影响正确性） |
+| V5 设置搜索框（`android:id/search_src_text`，`AutoCompleteTextView`，空时 `text="搜索…"`）`--clear-only --mask` | PASS | rc=0，输出判为「占位符 hint」⇒ hint 探测在**真机**成立 |
+| V6 副作用 | PASS | 搜索框回到 `搜索…`、App 两框为空、`interact/*.json` 明文计数 0 |
+
+真机与模拟器差异（重要）：
+- 真机 Android 12 的 `dumpsys input_method` 有 `mInputShown`（未聚焦 `false`），焦点判据可用。
+- 真机 moto 的**设置搜索框会回填 hint**（`搜索…`），而 Flutter 输入框不回填 ⇒ hint 行为既看 App 也看 ROM，不能按机型一刀切。
+- 真机登录页账号框原本预填了手机号，验证中已被替换/清空（未提交登录）。
+
+### 第三个判据缺陷（真机暴露，已修）
+**密码框漏 `--mask` 时的报错指向错误**：rc=6 打「期望长度 6，实际 `••••••`」——没开 `--mask` 时根本不是比长度，
+且提示只给 `--slow`/`--one-key`/Maestro，唯独没提真正该加的 `--mask`。
+修法：非掩码路径改打 `期望 '<值>'`（经 `mask_out` 脱敏）；读回全是 `•`/`*` 时追加
+`💡 读回是掩码圆点（密码框）⇒ 加 --mask 按长度校验；不要靠重试`。
 
 ### 本轮新增的坑
 - **`printf | grep -q` 在 `pipefail` 下会 SIGPIPE 误判**：脚本内改用 `case` 或 here-string（`focus_ok` 曾因此假失败）。
@@ -103,6 +136,10 @@
 - **`--append` 不能重试**：重试会先清空前缀，把「追加」变成「替换」（`driver.py` 同理强制 `retries=0`）。
 - **`_field_target` 的 rc=1 是预期路径**：用 `|| echo '{}'` 兜会把 JSON 与 `{}` 拼进同一条流，下游 `json.load` 直接失败 ⇒ 候选清单静默丢失（用 `|| true`）。
 - 校验阶段空树要**重取一次**，仍空 ⇒ rc=4；混成 rc=6（读回不符）会把排障引向「IME 掉字」。
+- **`require_device` 不读 `ANDROID_SERIAL`**：`adb devices` 首台即目标。模拟器 + 真机同时在线时首台可能是真机
+  （实测 `ZY22GT4HNG` 排在 `emulator-5554` 前，脚本全线改打真机）⇒ 要么只留目标设备，要么先 `adb devices` 核实。
+- **autoDebug 子代理的模型 `opencode-go/beam-free#high` 在本机被地域拦截**（`This model is not available in your country`，
+  两次派发均失败）⇒ 需真机回归时先确认该 agent 的模型可用，否则由主会话按机械命令接手。
 
 ## 发布（推送到 GitHub）
 - 本机权限层对所有 agent 硬性 deny `git push*`（build / autoDebug / commit 档），**不要反复重试**；agent 唯一发布入口是白名单脚本：

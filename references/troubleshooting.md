@@ -35,7 +35,7 @@
 | `settle.sh` 返回 rc=3 | **判定不可信**（仅 `--mode ui`）：语义树无内容或 dump 持续失败，**不是**「页面已静止」 | 去掉 `--mode ui` 用默认 `auto`（自动降级整屏像素），或显式 `--mode screen`；⚠️ rc=3 ≠ `bg.sh` 的 3（LOST） |
 | `findtap.sh` 首屏就报「语义树无内容」rc=1 | Flutter 未暴露语义树 ⇒ 滑动查找**不可能**命中，故不白滑 `--max` 屏 | 按输出三级降级：`maestro/tap.sh` → Vision 定位 → `shot.sh` + 坐标 `tap.sh`（须先截图确认） |
 | `settle.sh` 报「整屏截图始终不可用」rc=1 | screen 阶段 **screencap 一帧都没取到**（命令失败/0 字节），属「判据不可用」而非「页面在动」 | 先 `shot.sh` 验证能否截图；确认是 `screencap -p` 不被支持时改用 `maestro/assert.sh` 轮询或 `logwatch.sh <签名>`，别加大 `--timeout`（无效） |
-| 多设备抢焦点 | 脚本默认取第一台 | 只留目标设备；或 `adb -s <id>` 前先 `adb devices` 核实 |
+| 多设备抢焦点 | 脚本默认取第一台（`require_device` 取 `adb devices` 首个 `device`，**不读** `ANDROID_SERIAL`） | 只留目标设备；或先 `adb devices` 核实首台就是目标（模拟器 + 真机同时在线时首台不一定是你要的那台） |
 
 ## C2. 输入框类（输错 / 没输进去 / 反复粘贴）
 
@@ -46,7 +46,12 @@
 | 输完密码但登录失败，界面看不出来 | 没读回校验，错一两个字也走了下一步 | `--mask` 走长度校验，回报写明「内容未验证」；非密码字段必须有读回一致（`input.sh` 内建） |
 | `input.sh` rc=8 | 值里有非 ASCII（中文/emoji），`input text` 不支持 | 改 Maestro 片段 ③（`eraseText` + `inputText`）；**不要**反复重试同一条 |
 | 输入后读回为空，但界面上有值 | 密码框语义值恒空 / 只有圆点 | `--mask`；`⚠️ 内容未验证` 必须照写进结论，不要当成校验通过 |
+| `input.sh` rc=6，读回是 `••••••`（圆点） | 密码框没加 `--mask`：语义树只给掩码，逐字比对必然不符（2026-11-12 真机实测） | 加 `--mask`（按长度校验）；**不要**靠重试或 `--one-key` 硬顶 |
 | 清空失败（rc=5），旧值还在 | 光标不在末尾（`MOVE_END` 未生效）/ 老 ROM 不支持批量 keyevent | `--one-key`（逐发 `KEYCODE_DEL`）；`--clear-only` 单独验证一次再输入 |
+| `--clear-only` 报 rc=5，但界面**明明是空的** | 空输入框的 **hint 被语义树当成 `text`**（AccessibilityNodeInfo 行为；实测空搜索框 `text="Search settings"`） | 默认已开**哨兵探测**（输入 1 字符再删掉，读到只剩该字符 ⇒ 判「占位符」）；对输入即触发校验的页面用 `--no-probe` 关闭 |
+| `input.sh --field 账号` 报「未找到输入框」，而页面上明明有输入框 | Flutter/Compose 的空输入框**既无 text 也无 resource-id**（实测登录页两个 EditText 都是 `text=""`、无 id） | 用 `--editable-index N`（页面上第 N 个可编辑框，上→下排序）；根治仍是在 App 侧加 `Semantics(identifier:)` |
+| 输入/清空后「无法读回输入框」（rc=5/6） | 读回身份依赖 `bounds`（IME 弹出会位移）或关键词（内容一旦被替换就消失） | 用 `--editable-index N` 定位（序号在输入前后稳定，读回也走它）；或给输入框加稳定 id 后用 `--id` |
+| `--editable-index 2` 报越界 | 页面语义树里可编辑节点 < N（例如弹层未展开、字段在滚动区外） | `snapshot.sh --json` 数一下 `EditText`/`TextField` 节点；先滚动/展开再定位 |
 | `input.sh` rc=7 且提示「未获得焦点」 | 点击没把焦点交给目标框（弹层/键盘遮挡/`clickable=false`），脚本**主动停在删除之前** | 先 `settle.sh` + `snapshot.sh --max 20` 复核位置，必要时收起键盘/滚动后重试；**不要**绕过自检硬发键码（会删到别的框） |
 | 反复粘贴（执行器两种输入路径都用上） | 工具选择摇摆：一边 `input text` 一边 `setPasteboard`/`inputText` | **一条任务只选一条输入路径**并写进任务书；失败按上面降级顺序换一次，不要两条路径交替试 |
 | 凭据明文出现在会话/日志里 | 用了 `--text <密码>` | 改 `--text-from .debug-login.secret --key PASSWORD`（0600，`init.sh` 已加入 `.gitignore`，输出恒 `****`） |

@@ -20,6 +20,9 @@
 # 选项:
 #   --field <关键词>         输入框的 text 或 id 子串（忽略大小写、非正则；= tap_snapshot 语义）
 #   --id <元素 id>            按 id 匹配（只匹配 id 字段，不匹配 text；与 --field 互斥，取后出现的那个）
+#   --editable-index N        按「页面上第 N 个可编辑框」定位（1-based，上→下排序）；
+#                             用于**既无 text 也无 id** 的输入框（Flutter/Compose 常见，2026-11-12 实测），
+#                             与 --field/--id 互斥
 #   --exact                  精确匹配且大小写敏感
 #   --index N                多处命中取第 N 个（1-based，默认 1）
 #   --append                 append 模式（不清空；默认 replace = 先清空再输入）
@@ -29,6 +32,8 @@
 #   --max-retry N            校验不符时的重试次数（默认 1）
 #   --slow                   每段间隔 0.6s（默认 0.15s），用于 IME 掉字的机器
 #   --one-key                逐发 KEYCODE_DEL（老 ROM 不支持一次多键码时用）
+#   --no-probe               关闭 --clear-only 的「占位符哨兵探测」
+#                            （默认开启：空框的 hint 会被语义树当成 text，见「已知边界」）
 #   --dry-run                只输出定位/清空方案
 #
 # 退出码:
@@ -43,6 +48,10 @@
 #   - 文本里含字面 `%s` 会被 Android 当作空格（框架层限制，无法转义）；`%s` 请改走 Maestro。
 #   - 密码框语义值可能恒为空或全为圆点 ⇒ `--mask` 只比长度；长度也不可见时输出
 #     `⚠️ 内容未验证`，只保证「点击聚焦 + 已发送按键」，不要当成通过。
+#   - **空输入框的 hint 会被语义树当成 text**（AccessibilityNodeInfo 行为，实测：空的搜索框
+#     `text="Search settings"`）。故 `--clear-only` 读回非空时默认做一次**哨兵探测**：输入 1 个字符
+#     再删掉，若读回只剩该字符 ⇒ 之前读到的是 hint，判「已清空」。探测会向目标框发 1 个字符
+#     （对输入即触发校验/搜索的页面有副作用）⇒ 用 `--no-probe` 关掉，改用 `--text` 全量替换流程验证。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # → scripts/android
@@ -53,8 +62,8 @@ INTERACT_DIR="$LOG_DIR/interact"
 
 FIELD=""; TEXT=""; TEXT_SET=false; FROM_SET=false; STDIN_SET=false; KEY_NAME=""
 TEXT_FROM=""   # 必须预置：`set -u` 下 --clear-only 路径不会赋值，直接引用会 unbound
-MASK=false; EXACT=false; ID_ONLY=false; INDEX=1; MODE="replace"; CLEAR_ONLY=false
-MAX_RETRY=1; SLOW=false; ONE_KEY=false; DRY_RUN=false
+MASK=false; EXACT=false; ID_ONLY=false; INDEX=1; EDIT_IDX=0; MODE="replace"; CLEAR_ONLY=false
+MAX_RETRY=1; SLOW=false; ONE_KEY=false; DRY_RUN=false; PROBE=true
 # 凭据来源（--text-from / --text-stdin）一律按敏感处理：输出恒打 ****，不回显原值
 SECRET=false
 
@@ -76,12 +85,17 @@ while [ $# -gt 0 ]; do
     --key)       [ $# -ge 2 ] || { echo "❌ --key 缺参数值"; exit 2; }; KEY_NAME="$2"; shift 2 ;;
     --exact)     EXACT=true; shift ;;
     --index)     [ $# -ge 2 ] || { echo "❌ --index 缺参数值"; exit 2; }; INDEX="$2"; shift 2 ;;
+    --editable-index)
+      [ $# -ge 2 ] || { echo "❌ --editable-index 缺参数值"; exit 2; }
+      case "$2" in ''|*[!0-9]*) echo "❌ --editable-index 必须为整数: $2"; exit 2 ;; esac
+      EDIT_IDX="$2"; shift 2 ;;
     --append)    MODE="append"; shift ;;
     --clear-only) CLEAR_ONLY=true; shift ;;
     --mask)      MASK=true; shift ;;
     --max-retry) [ $# -ge 2 ] || { echo "❌ --max-retry 缺参数值"; exit 2; }; MAX_RETRY="$2"; shift 2 ;;
     --slow)      SLOW=true; shift ;;
     --one-key)   ONE_KEY=true; shift ;;
+    --no-probe)  PROBE=false; shift ;;
     --dry-run)   DRY_RUN=true; shift ;;
     -h|--help)   usage; exit 0 ;;
     -*) echo "❌ 未知参数: $1"; exit 2 ;;
@@ -89,7 +103,10 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ -n "$FIELD" ] || { echo "❌ 需要 --field <关键词> 或 --id <元素 id>"; exit 2; }
+[ -n "$FIELD" ] || [ "$EDIT_IDX" -gt 0 ] || { echo "❌ 需要 --field <关键词> / --id <元素 id> / --editable-index N"; exit 2; }
+[ "$EDIT_IDX" -gt 0 ] && [ -n "$FIELD" ] && { echo "❌ --editable-index 与 --field/--id 互斥"; exit 2; }
+# --index 只对「关键词命中多个」消歧；与 --editable-index 同用会静默失效 ⇒ 直接拒（与 --field 口径一致）
+[ "$EDIT_IDX" -gt 0 ] && [ "${INDEX:-1}" -gt 1 ] && { echo "❌ --editable-index 下 --index 无意义（序号即目标）；请二选一"; exit 2; }
 case "$INDEX" in ''|*[!0-9]*) echo "❌ --index 必须为整数: $INDEX"; exit 2 ;; esac
 [ "$INDEX" -ge 1 ] || { echo "❌ --index 必须 ≥1"; exit 2; }
 case "$MAX_RETRY" in ''|*[!0-9]*) echo "❌ --max-retry 必须为非负整数: $MAX_RETRY"; exit 2 ;; esac
@@ -209,13 +226,16 @@ print("💡 语义树可用时也确认页面确实是目标页：bash scripts/s
 ' || true
 }
 
-plan_field() {  # <snapshot> <mode: field|field-edit|bounds> <value> [mask:on|off] → stdout KV；rc 透传
+plan_field() {  # <snapshot> <mode: field|field-edit|bounds|editable> <value> [mask:on|off] → stdout KV；rc 透传
   # mask=off 用于**读回**：--mask 会让 _field_target 不回显 current（防明文外泄），
   #   但读回就是要那个值 ⇒ 定位与掩码必须解耦，否则 --mask --clear-only 会把空串当「已清空」（假绿）。
   local snap="$1" mode="$2" value="$3" mask_mode="${4:-on}" rc=0
   set +e
   if [ "$mode" = "bounds" ]; then
     python3 "$FIELD_PY" --snapshot "$snap" --bounds "$value" --kv
+  elif [ "$mode" = "editable" ]; then
+    # 无 text/id 的输入框：按「第 N 个可编辑节点」定位（读回也走这条路，序号在输入前后稳定）
+    python3 "$FIELD_PY" --snapshot "$snap" --editable-index "$value" --kv
   else
     local extra=()
     [ "$mask_mode" = "on" ] && [ "$MASK" = true ] && extra+=("--mask")
@@ -297,9 +317,9 @@ do_type() {  # <text>
   return 0
 }
 
-read_back() {  # <bounds> <field> <id> → stdout 当前值
+read_back() {  # <bounds> <field> <id> [editable_index] [editable_total] → stdout 当前值
   # rc 0 找到 / 1 未找到或不是同一个框 / 4 语义树为空（重取一次后仍空，调用方按 contract 报 rc=4）
-  local snap="$READBACK_SNAP" kv rc=0 tries=0 want_bounds="$1" want_field="$2" want_id="$3"
+  local snap="$READBACK_SNAP" kv rc=0 tries=0 want_bounds="$1" want_field="$2" want_id="$3" want_edit="${4:-0}" want_etotal="${5:-0}"
   while :; do
     set +e
     bash "$SCRIPTS/snapshot.sh" --platform android --json > "$snap" 2>/dev/null
@@ -319,6 +339,21 @@ read_back() {  # <bounds> <field> <id> → stdout 当前值
   kv=$(plan_field "$snap" bounds "$want_bounds" off)
   rc=$?
   set -e
+  if [ "$rc" -ne 0 ] && [ "$want_edit" -gt 0 ]; then
+    # --editable-index 模式：序号（上→下第 N 个可编辑框）在输入前后稳定 ⇒ 读回身份不依赖文案，
+    #   也不依赖 bounds（输入后 IME 弹出/布局位移很常见）。这是无 text/id 输入框的唯一稳定身份。
+    set +e
+    kv=$(plan_field "$snap" editable "$want_edit" off)
+    rc=$?
+    set -e
+    # ⚠️ 序号本身不是身份：读回帧里可编辑节点数变了（弹层激活/字段增减）⇒ 第 N 个可能已是**别的框**。
+    #    读到别人的值会让 --clear-only 假绿、让重试按错误长度盲删（与关键词分支的 total==1 兜底同义）。
+    if [ "$rc" -eq 0 ] && [ "$want_etotal" -gt 0 ] \
+       && [ "$(kv_get "$kv" editable_total)" != "$want_etotal" ]; then
+      echo "⚠️ 读回时页面可编辑框数量变了（$(kv_get "$kv" editable_total) ≠ ${want_etotal}）⇒ 无法确认是同一框，按读回失败处理" >&2
+      return 1
+    fi
+  fi
   if [ "$rc" -ne 0 ] && [ -n "$want_field" ]; then
     # bounds 漂移（键盘收起/布局变化）⇒ 退一步按关键词 + **只认可编辑节点**再定位。
     # ⚠️ 必须校验「同一节点」：输入后原文/占位符会变，只按关键词可能命中同页另一个框，
@@ -344,6 +379,51 @@ read_back() {  # <bounds> <field> <id> → stdout 当前值
   [ "$rc" -eq 0 ] || return 1
   kv_get "$kv" current
   return 0
+}
+
+# 占位符探测：空输入框的 hint 会被语义树当成 text（AccessibilityNodeInfo 行为）⇒
+#   「--clear-only 读回非空」有两种可能：真有残留 / 读到的其实是 hint。用哨兵区分：
+#   在（已清空的）框里输入 1 个字符，若读回**只剩该字符** ⇒ hint 消失 ⇒ 之前为空。
+#   哨兵随后按光标位置删 1 次还原（探测只在明确「读回非空」时才发，不影响正常替换流程）。
+# rc: 0 = 判定为空（hint）/ 1 = 有内容或无法判定
+probe_hint_only() {  # <bounds> <field> <id> <after> [editable_index] [editable_total]
+  local bounds="$1" field="$2" nid="$3" after="$4" want_edit="${5:-0}" want_etotal="${6:-0}"
+  local sentinel rb=0 probe_after="" vrc=0
+  # 探测会发真实按键：焦点若已漂走（OTP 一格一码 / 输入即跳转），哨兵会落到别的框、清理 DEL 也会删别的框
+  if ! focus_ok; then
+    echo "⚠️ 探测前焦点已不在目标框 ⇒ 不做占位符探测（按无法判定处理）" >&2
+    return 1
+  fi
+  for sentinel in a 1; do
+    if ! do_type "$sentinel"; then
+      echo "⚠️ 哨兵字符派发失败 ⇒ 无法判定读回的是占位符还是残留内容" >&2
+      return 1
+    fi
+    probe_after=""
+    set +e
+    probe_after=$(read_back "$bounds" "$field" "$nid" "$want_edit" "$want_etotal"); rb=$?
+    set -e
+    # 只在「哨兵确实落进去了」时才删：没落进去（只读/键盘拒收）还发 DEL，会删掉框里**原有的**字符
+    if [ "$rb" -eq 0 ] && [ "$probe_after" != "$after" ]; then
+      adb -s "$DEVICE" shell input keyevent 67 >/dev/null 2>&1 \
+        || echo "⚠️ 哨兵清理（DEL）失败 ⇒ 框内可能残留 1 个字符，请复核" >&2
+    fi
+    if [ "$rb" -ne 0 ]; then
+      echo "⚠️ 哨兵后读回失败（rc=${rb}）⇒ 无法判定读回的是占位符还是残留内容" >&2
+      return 1
+    fi
+    set +e
+    python3 "$FIELD_PY" --hint-verdict "--actual=$after" "--probe=$probe_after" "--sentinel=$sentinel" >/dev/null
+    vrc=$?
+    set -e
+    case "$vrc" in
+      0) return 0 ;;
+      1) return 1 ;;   # 确有残留内容：不再试第二个哨兵
+    esac
+    # 3 = 哨兵没进去（只读/输入类型不匹配）⇒ 换数字哨兵再试一次
+  done
+  echo "⚠️ 哨兵未进入输入框（只读或输入类型不匹配）⇒ 无法判定是否只是占位符" >&2
+  return 1
 }
 
 # 现场 JSON：python 构造（不手拼；字段名/值都按 key=value 传入，值含引号也不会产出坏 JSON）
@@ -405,10 +485,23 @@ esac
 PLAN=""
 PLAN_RC=0
 set +e
-PLAN=$(plan_field "$SNAP" field "$FIELD")
+if [ "$EDIT_IDX" -gt 0 ]; then
+  PLAN=$(plan_field "$SNAP" editable "$EDIT_IDX")
+else
+  PLAN=$(plan_field "$SNAP" field "$FIELD")
+fi
 PLAN_RC=$?
 set -e
 if [ "$PLAN_RC" -ne 0 ]; then
+  if [ "$EDIT_IDX" -gt 0 ]; then
+    echo "❌ 未找到第 ${EDIT_IDX} 个可编辑框（页面可编辑节点数不足，或语义树里没有 EditText）"
+    CUES=""
+    set +e
+    CUES=$(python3 "$FIELD_PY" --snapshot "$SNAP" --editable-index "$EDIT_IDX" 2>/dev/null)
+    set -e
+    show_candidates "${CUES:-}"
+    exit 1
+  fi
   echo "❌ 未找到输入框（$( [ "$ID_ONLY" = true ] && echo '--id' || echo '--field' ) '${FIELD}'，index=${INDEX}）"
   # ⚠️ 未命中时 _field_target 的 rc=1 是**预期**的：不能用 `|| echo '{}'` 兜（会把 JSON 和 `{}`
   #    拼在一条流里，下游 json.load 直接失败 ⇒ 候选清单静默丢失）；用 `|| true` 保留原输出
@@ -427,6 +520,7 @@ DELS=$(kv_get "$PLAN" dels); NEEDS_CLEAR=$(kv_get "$PLAN" needs_clear)
 BOUNDS=$(kv_get "$PLAN" bounds); CUR=$(kv_get "$PLAN" current)
 NODE_ID=$(kv_get "$PLAN" id); CLICKABLE=$(kv_get "$PLAN" clickable)
 DELS="${DELS:-0}"; NEEDS_CLEAR="${NEEDS_CLEAR:-0}"; CLICKABLE="${CLICKABLE:-0}"; NODE_ID="${NODE_ID:-}"
+EDIT_TOTAL=$(kv_get "$PLAN" editable_total); EDIT_TOTAL="${EDIT_TOTAL:-0}"
 
 # 统一的「值能否外显」判据（掩码字段或凭据来源一律打码）：三处都走它，避免各自判漏
 mask_out() {
@@ -434,7 +528,7 @@ mask_out() {
 }
 
 SHOWN=$(mask_out "$CUR")
-echo "🎯 目标: bounds=${BOUNDS} id='${NODE_ID}' center=(${CX},${CY}) clickable=${CLICKABLE} 当前值='${SHOWN}' 清空删除=${DELS}"
+echo "🎯 目标: bounds=${BOUNDS} id='${NODE_ID}' center=(${CX},${CY}) clickable=${CLICKABLE} 当前值='${SHOWN}' 清空删除=${DELS}$([ "$EDIT_IDX" -gt 0 ] && echo " （第 ${EDIT_IDX} 个可编辑框）" || true)"
 
 if [ "$DRY_RUN" = true ]; then
   echo "🧪 --dry-run：不点击、不输入"
@@ -465,7 +559,7 @@ fi
 if [ "$CLEAR_ONLY" = true ]; then
   LEFT=""; RB_RC=0
   set +e
-  LEFT=$(read_back "$BOUNDS" "$FIELD" "$NODE_ID"); RB_RC=$?
+  LEFT=$(read_back "$BOUNDS" "$FIELD" "$NODE_ID" "$EDIT_IDX" "$EDIT_TOTAL"); RB_RC=$?
   set -e
   case "$RB_RC" in
     0) : ;;
@@ -477,7 +571,15 @@ if [ "$CLEAR_ONLY" = true ]; then
     log_interact clear-only "field=$FIELD" "bounds=$BOUNDS" "cleared=true" || true
     exit 0
   fi
+  # 读回非空有两种可能：真有残留 / 读到的是占位符 hint（空框的 text 被回填 hint）。
+  # 默认用哨兵探测区分；关闭探测（--no-probe）时维持「读回非空 ⇒ 失败」。
+  if [ "$PROBE" = true ] && probe_hint_only "$BOUNDS" "$FIELD" "$NODE_ID" "$LEFT" "$EDIT_IDX" "$EDIT_TOTAL"; then
+    echo "✅ 已清空（读回 '$(mask_out "$LEFT")' 是占位符 hint，不是残留内容）"
+    log_interact clear-only "field=$FIELD" "bounds=$BOUNDS" "cleared=true" "hint_only=true" || true
+    exit 0
+  fi
   echo "❌ 清空失败：读回 '$(mask_out "$LEFT")'（可试 --one-key / 增大 --max-retry）" >&2
+  [ "$PROBE" = true ] || echo "💡 当前关了占位符探测（--no-probe）：空框的 placeholder 会被语义树当成 text，去掉该参数可自动区分" >&2
   exit 5
 fi
 
@@ -492,7 +594,7 @@ while : ; do
   ACTUAL=""
   RB_RC=0
   set +e
-  ACTUAL=$(read_back "$BOUNDS" "$FIELD" "$NODE_ID"); RB_RC=$?
+  ACTUAL=$(read_back "$BOUNDS" "$FIELD" "$NODE_ID" "$EDIT_IDX" "$EDIT_TOTAL"); RB_RC=$?
   set -e
   if [ "$RB_RC" -eq 4 ]; then
     echo "❌ 校验阶段语义树为空（重取后仍空）— 需 App 侧 Semantics 或改用 shot.sh + 坐标" >&2
@@ -500,7 +602,7 @@ while : ; do
   fi
   if [ "$RB_RC" -eq 0 ]; then
     VRC=0
-    VFY_ARGS=(--verify --expect "$TEXT" --actual "$ACTUAL")
+    VFY_ARGS=(--verify "--expect=$TEXT" "--actual=$ACTUAL")
     [ "$MASK" = true ] && VFY_ARGS+=(--mask)
     # append 模式读回是「旧值+新值」⇒ 只判后缀，否则会把成功误判成不符、再多删一遍
     [ "$MODE" = "append" ] && VFY_ARGS+=(--append)
@@ -530,7 +632,17 @@ while : ; do
   fi
 
   if [ "$ATTEMPT" -ge "$MAX_RETRY" ]; then
-    echo "❌ 读回校验不符（期望长度 ${#TEXT}，实际 '$(mask_out "$ACTUAL")'）" >&2
+    # 只有 --mask 才是「比长度」；非掩码路径说的是逐字比对，写成「期望长度」会误导排查方向
+    #   （2026-11-12 真机实测：密码框未加 --mask 时读回 '••••••'，看到「期望长度 6」无从下手）
+    if [ "$MASK" = true ]; then
+      echo "❌ 读回校验不符（期望长度 ${#TEXT}，实际 '$(mask_out "$ACTUAL")'）" >&2
+    else
+      echo "❌ 读回校验不符（期望 '$(mask_out "$TEXT")'，实际 '$(mask_out "$ACTUAL")'）" >&2
+    fi
+    # 读回全是掩码圆点/星号 ⇒ 几乎必定是密码框（语义树只给掩码），该补的是 --mask，不是重试
+    case "$ACTUAL" in
+      *'•'*|*'*'*) [ "$MASK" = true ] || echo "💡 读回是掩码圆点（密码框）⇒ 加 --mask 按长度校验；不要靠重试" >&2 ;;
+    esac
     echo "💡 可试：--slow（IME 掉字）/ --one-key（老 ROM）/ 或改走 Maestro eraseText+inputText" >&2
     log_interact input "field=$FIELD" "bounds=$BOUNDS" "mode=$MODE" \
       "mask=$([ "$MASK" = true ] && echo true || echo false)" "attempts=$((ATTEMPT + 1))" "ok=false" || true
@@ -543,7 +655,11 @@ while : ; do
   PLAN2=""
   PLAN2_RC=0
   set +e
-  PLAN2=$(plan_field "$SNAP" field "$FIELD")
+  if [ "$EDIT_IDX" -gt 0 ]; then
+    PLAN2=$(plan_field "$SNAP" editable "$EDIT_IDX")
+  else
+    PLAN2=$(plan_field "$SNAP" field "$FIELD")
+  fi
   PLAN2_RC=$?
   set -e
   if [ "$PLAN2_RC" -eq 0 ]; then
@@ -553,14 +669,14 @@ while : ; do
   fi
   REDO_PLAN=""; REDO_RC=0
   set +e
-  REDO_PLAN=$(read_back "$BOUNDS" "$FIELD" "$NODE_ID"); REDO_RC=$?
+  REDO_PLAN=$(read_back "$BOUNDS" "$FIELD" "$NODE_ID" "$EDIT_IDX" "$EDIT_TOTAL"); REDO_RC=$?
   set -e
   if [ "$REDO_RC" -eq 4 ]; then
     echo "❌ 重试前语义树为空（重取后仍空）— 需 App 侧 Semantics 或改用 shot.sh + 坐标" >&2
     exit 4
   fi
   # 清空次数与首次同源（_field_target.plan_clear），不再内联复制一份逻辑
-  REDO_ARGS=(--plan-clear "${REDO_PLAN:-}")
+  REDO_ARGS=(--plan-clear="${REDO_PLAN:-}")
   [ "$MASK" = true ] && REDO_ARGS+=(--mask)
   REDO_DELS=$(python3 "$FIELD_PY" ${REDO_ARGS[@]+"${REDO_ARGS[@]}"} 2>/dev/null || echo "$DELS")
   REDO_DELS="${REDO_DELS:-0}"

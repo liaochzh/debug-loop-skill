@@ -19,6 +19,7 @@
     --verify    只做读回比对：rc=0 一致 / rc=1 不一致
 
 退出码: 0 命中且校验一致 / 1 未命中·无坐标·校验不一致 / 2 用法错
+        （`--hint-verdict`: 0 空(占位符) / 1 仍有内容 / 3 无法判定）
 """
 import argparse
 import json
@@ -70,6 +71,43 @@ def verify(expected, actual, mask=False, append=False):
     return actual == expected
 
 
+def hint_verdict(after, probe, sentinel="a"):
+    """纯函数：判定「清空后的读回值其实是占位符 hint（实际为空）」→ 0 空 / 1 有内容 / 3 无法判定。
+
+    为什么需要：Android 语义树来自 AccessibilityNodeInfo，可编辑框**内容为空时 `text` 会回填 hint**
+    （2026-11-12 模拟器实测：空的搜索框 `text="Search settings"`，class=EditText、focused=true）。
+    于是「读回非空」≠「没清空」，`--clear-only` 会把空框判成清空失败。
+
+    判据（哨兵探测）：空框里输入 1 个字符后 `text` 只剩该字符（hint 消失）；框里若还有残留 R，
+    读回是 R+sentinel。
+      - probe == sentinel     ⇒ 之前读到的是 hint ⇒ 空
+      - probe == after        ⇒ 哨兵没进去（只读/IME 丢弃）⇒ 无法判定（不是「有内容」的证据）
+      - 其他                  ⇒ 仍有内容
+    """
+    after = after or ""
+    probe = probe or ""
+    if not after:
+        return 0
+    # 顺序要紧：哨兵没进去时 probe 与 after 相同；若此时 after 恰好也是哨兵字符（框里残留单个 'a'/'1'），
+    # 先比 sentinel 会误判成「空」= 假绿（2026-11-12 复审 r2 P2）。所以「没变化」优先判无法判定。
+    if probe.casefold() == after.casefold():
+        return 3
+    if probe.casefold() == sentinel.casefold():
+        return 0
+    return 1
+
+
+def editable_order(nodes):
+    """可编辑节点按「上→下、左→右」稳定排序（`--editable-index` 的序号来源）。
+
+    为什么需要：Flutter/Compose 的空输入框常常**既无 text 也无 resource-id**（实测
+    com.xiaotunsmart.tonge 登录页两个 EditText 都是 `text=""`、无 id）⇒ `--field` 无法定位，
+    只能按「页面上第 N 个可编辑框」定位；同一页面的排序在输入前后稳定，可当读回身份用。
+    """
+    hits = [n for n in nodes if isinstance(n, dict) and is_editable(n) and n.get("center")]
+    return sorted(hits, key=lambda n: (n["center"][1], n["center"][0]))
+
+
 EDITABLE_HINTS = ("edittext", "textfield", "textinput", "autocompletetextview",
                   "searchview", "securetextfield")
 
@@ -114,6 +152,7 @@ def emit(obj, kv=False, code=0):
             "bounds=%s" % (node.get("bounds") or ""),
             "id=%s" % (node.get("id") or ""),
             "total=%d" % obj.get("total", 1),
+            "editable_total=%d" % obj.get("editable_total", 0),
             "current=%s" % (obj.get("current") or ""),
         ]
         print("\n".join(lines))
@@ -152,15 +191,26 @@ def main(argv=None):
     ap.add_argument("--editable-only", action="store_true",
                     help="只在可编辑节点（EditText/TextField…）上匹配，避免命中静态 label")
     ap.add_argument("--index", type=int, default=1, help="多处命中取第 N 个（1-based）")
+    ap.add_argument("--editable-index", type=int, default=0,
+                    help="按「页面上第 N 个可编辑框」定位（1-based，上→下排序）；无 text/id 的输入框用这个")
     ap.add_argument("--mask", action="store_true", help="掩码字段（只比长度、不回显值）")
     ap.add_argument("--kv", action="store_true", help="输出 KEY=VALUE 行（供 shell）")
     ap.add_argument("--verify", action="store_true", help="只做读回比对")
     ap.add_argument("--append", action="store_true", help="追加输入语义（--verify 只判后缀）")
+    ap.add_argument("--hint-verdict", action="store_true",
+                    help="只判定「读回值是不是占位符 hint」：print empty|content|unknown，rc=0/1/3")
     ap.add_argument("--plan-clear", default=None, metavar="值",
                     help="只按给定值算清空次数并打印数字（供 shell 复用，避免第二处漂移）")
     ap.add_argument("--expect", default="", help="--verify 的期望值")
-    ap.add_argument("--actual", default="", help="--verify 的实际值")
+    ap.add_argument("--actual", default="", help="--verify 的实际值 / --hint-verdict 的清空后读回值")
+    ap.add_argument("--probe", default="", help="--hint-verdict 的哨兵探测后读回值")
+    ap.add_argument("--sentinel", default="a", help="--hint-verdict 的哨兵字符（默认 a）")
     args = ap.parse_args(argv)
+
+    if args.hint_verdict:
+        verdict = hint_verdict(args.actual, args.probe, args.sentinel)
+        print({0: "empty", 1: "content", 3: "unknown"}[verdict])
+        return verdict
 
     if args.verify:
         ok = verify(args.expect, args.actual, args.mask, args.append)
@@ -175,8 +225,18 @@ def main(argv=None):
     if args.index < 1:
         print(json.dumps({"ok": False, "reason": "--index 必须 ≥1"}, ensure_ascii=False))
         return 2
-    if not args.field and not args.bounds:
-        print(json.dumps({"ok": False, "reason": "需要 --field 或 --bounds"}, ensure_ascii=False))
+    if args.editable_index and args.field:
+        print(json.dumps({"ok": False, "reason": "--editable-index 与 --field 互斥"}, ensure_ascii=False))
+        return 2
+    if args.editable_index:
+        if args.editable_index < 1:
+            print(json.dumps({"ok": False, "reason": "--editable-index 必须 ≥1"}, ensure_ascii=False))
+            return 2
+        if args.bounds:
+            print(json.dumps({"ok": False, "reason": "--editable-index 与 --bounds 互斥"}, ensure_ascii=False))
+            return 2
+    if not args.field and not args.bounds and not args.editable_index:
+        print(json.dumps({"ok": False, "reason": "需要 --field / --bounds / --editable-index"}, ensure_ascii=False))
         return 2
 
     nodes, payload, err = load_nodes(args.snapshot)
@@ -193,6 +253,16 @@ def main(argv=None):
             if edit_hits:
                 hits = edit_hits
         why = "未命中 bounds（该输入框可能已不在当前页/被滚动走）"
+    elif args.editable_index:
+        hits = editable_order(nodes)
+        why = "页面无可编辑节点（语义树里没有 EditText/TextField）"
+        if hits and args.editable_index > len(hits):
+            return emit({"ok": False,
+                         "reason": "--editable-index %d 越界（页面可编辑节点 %d 个）"
+                                   % (args.editable_index, len(hits)),
+                         "candidates": candidates(hits)}, kv=args.kv, code=1)
+        if hits:
+            hits = [hits[args.editable_index - 1]]
     else:
         hits = []
         for node in nodes:
@@ -232,6 +302,7 @@ def main(argv=None):
         "total": len(hits),
         "clickable": bool(node.get("clickable")),
         "offscreen": tap.offscreen(center, tap.screen_rect(nodes, payload.get("dialect") or "uiautomator")),
+        "editable_total": len(editable_order(nodes)) if args.editable_index else 0,
     }
     return emit(obj, kv=args.kv, code=0)
 

@@ -37,6 +37,8 @@ autoDebug 早期存在「提前返回」：只执行 2~3 步就返回、或因�
   `账号 = <secret:ACCOUNT>`、`密码 = <secret:PASSWORD>`（来自项目根 0600 的 `.debug-login.secret`）
 - Android：`bash <S>/scripts/android/input.sh --field 账号 --text-from .debug-login.secret --key ACCOUNT`
   密码加 `--mask`；中文/emoji ⇒ 改 Maestro `eraseText` + `inputText`（`input.sh` 会 rc=8）
+- 输入框**既无 text 也无 id**（Flutter/Compose 常见）⇒ 用 `--editable-index N`（页面上第 N 个可编辑框，上→下排序；
+  先 `snapshot.sh --json` 数一下）。不要用「上一次的输入内容」当 `--field`：内容一被替换，读回就找不到框
 - iOS 真机：`driver.py find-type --value 账号 --text-from … --key ACCOUNT [--mask]`
 - **禁止自行拼 `adb shell input text` / `setPasteboard`**；一条任务只用一条输入路径，失败按降级换一次即可
 - 回报里必须写「读回校验」结果：一致 / 只比长度（掩码，内容未验证）/ 读回失败
