@@ -28,6 +28,7 @@
 - **空树分支真机验证**（一次性 CustomPaint 工程）：auto 降级 → `判据=screen` rc=0；`--mode ui` rc=3；`findtap` 首屏 rc=1；空树 dump 实测 **3418 B**。
 
 ## 未完成
+- **多账号真机闭环**（`fa158a0` 后唯一门禁项）：需一个有登录页且含 `.debug.env` 的工程；两组凭据各登录一次，密码 `--mask`，登录后 `assert_page.sh has:<账号标识>` 证明确实切到目标账号（读回校验只证明值写入，不证明身份）。
 - 无（空树分支已于 2026-10-27 用一次性 Flutter 工程在真机验证并通过：auto 降级 rc=0 / `--mode ui` rc=3 / findtap rc=1）。
 - `screen` 模式在 FLAG_SECURE/息屏下仍可能假「静止」（设计边界，靠 rc=0 必带 `判据=screen` 缓解）。
 
@@ -196,4 +197,4 @@
 - 顺带修既有缺陷：`input.sh` 的 `--text-from -` 原被当成未知参数（文档却说等价 stdin）⇒ 现真正走 stdin，并有用例锁住；stdin 配 `--key` 改为 rc=2（不再静默忽略键名）。
 - 未做：真机两组账号各登录一次 + `assert_page has:<账号标识>`（读回校验只证明值写进了框，不证明身份）；`.debug.env` 不做 flavor→账号映射；`flow` 的 `type` 步骤仍只收内联 text。
 - 坑：`references/maestro-flow-snippets.md` 原建议 `source .debug-login.secret`，含组头行会被当命令执行 ⇒ 已改为 `_secret.py get` 命令替换。
-- 方案/审查：`docs/plan/20261112-multi-account-secret{,.review}.md`。
+- 方案/审查：`docs/plan/20261112-multi-account-secret{,.review}.md`、`docs/review/20261112-multi-account-secret{,.r2}.md`；提交 `fa158a0`（15 文件，测试 184 项）。
