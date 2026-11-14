@@ -13,9 +13,11 @@
 #
 # 取值来源（三选一，互斥）:
 #   --text <字符串>          直接给值（会出现在命令行/会话记录里，敏感值不要用）
-#   --text-from [文件]       从 KEY=VALUE 文件读（缺省 .debug-login.secret，必须 0600）
+#   --text-from [文件]       从凭据文件读（缺省 .debug-login.secret；只许 owner 访问，group/other 位必须为空）
 #   --text-stdin             从 stdin 读（`--text-from -` 等价）
-#   --key <名字>             配合 --text-from：取哪一行；缺省取第一条
+#   --key <名字>             配合 --text-from：取哪个键（组内缺省 ACCOUNT；扁平档缺省取第一条）
+#   --account <名字>         配合 --text-from <文件>：取 [acct:<名字>] 组内的值（多测试账号）；
+#                            与 --text / --text-stdin 互斥，缺省角色 ACCOUNT
 #
 # 选项:
 #   --field <关键词>         输入框的 text 或 id 子串（忽略大小写、非正则；= tap_snapshot 语义）
@@ -37,7 +39,7 @@
 #   --dry-run                只输出定位/清空方案
 #
 # 退出码:
-#   0 输入并校验通过 / 1 未找到输入框（附候选）/ 2 用法错或凭据文件权限不合规
+#   0 输入并校验通过 / 1 未找到输入框（附候选）/ 2 用法错、凭据文件权限不合规、账号组/角色不存在或被拒
 #   3 环境不可用（无设备 / 缺 .debug.env / 快照无法获取）/ 4 语义树为空（无 Semantics）
 #   5 清空失败（--clear-only 或重试后仍非空）/ 6 输入后读回校验不符
 #   7 事件派发失败（adb input 报错）**或点击后未获得焦点**（此时一律未做任何删除/输入）/ 8 含非 ASCII 字符（adb input text 不支持，改走 Maestro）
@@ -60,7 +62,7 @@ FIELD_PY="$SCRIPTS/_field_target.py"
 LOG_DIR="${LOG_DIR:-build/debug}"
 INTERACT_DIR="$LOG_DIR/interact"
 
-FIELD=""; TEXT=""; TEXT_SET=false; FROM_SET=false; STDIN_SET=false; KEY_NAME=""
+FIELD=""; TEXT=""; TEXT_SET=false; FROM_SET=false; STDIN_SET=false; KEY_NAME=""; ACCOUNT=""
 TEXT_FROM=""   # 必须预置：`set -u` 下 --clear-only 路径不会赋值，直接引用会 unbound
 MASK=false; EXACT=false; ID_ONLY=false; INDEX=1; EDIT_IDX=0; MODE="replace"; CLEAR_ONLY=false
 MAX_RETRY=1; SLOW=false; ONE_KEY=false; DRY_RUN=false; PROBE=true
@@ -78,11 +80,12 @@ while [ $# -gt 0 ]; do
     --text)      [ $# -ge 2 ] || { echo "❌ --text 缺参数值"; exit 2; }; TEXT="$2"; TEXT_SET=true; shift 2 ;;
     --text-from)
       FROM_SET=true
-      if [ $# -ge 2 ] && [ "${2#-}" = "$2" ]; then TEXT_FROM="$2"; shift 2; else TEXT_FROM=".debug-login.secret"; shift; fi
+      if [ $# -ge 2 ] && { [ "${2#-}" = "$2" ] || [ "$2" = "-" ]; }; then TEXT_FROM="$2"; shift 2; else TEXT_FROM=".debug-login.secret"; shift; fi
       [ "$TEXT_FROM" = "-" ] && { STDIN_SET=true; FROM_SET=false; }
       ;;
     --text-stdin) STDIN_SET=true; shift ;;
     --key)       [ $# -ge 2 ] || { echo "❌ --key 缺参数值"; exit 2; }; KEY_NAME="$2"; shift 2 ;;
+    --account)   [ $# -ge 2 ] || { echo "❌ --account 缺参数值"; exit 2; }; ACCOUNT="$2"; shift 2 ;;
     --exact)     EXACT=true; shift ;;
     --index)     [ $# -ge 2 ] || { echo "❌ --index 缺参数值"; exit 2; }; INDEX="$2"; shift 2 ;;
     --editable-index)
@@ -124,6 +127,17 @@ fi
 SLEEP_CHUNK="0.15"
 [ "$SLOW" = true ] && SLEEP_CHUNK="0.6"
 
+# --account 只对凭据文件有意义；和 --text / stdin 同用会让人以为切了账号、实际没切 ⇒ 直接拒
+if [ -n "$ACCOUNT" ]; then
+  if [ "$TEXT_SET" = true ] || [ "$STDIN_SET" = true ] || [ "$FROM_SET" != true ]; then
+    echo "❌ --account 只能与 --text-from <文件> 同用"; exit 2
+  fi
+fi
+# stdin 没有键名概念：--key 在 stdin 下会被静默忽略（键名前缀被当值输入）⇒ 直接拒，与 --account 同口径
+if [ "$STDIN_SET" = true ] && [ -n "$KEY_NAME" ]; then
+  echo "❌ --key 不能与 stdin 同用（stdin 只接受原文；要按 KEY 取值请给文件）"; exit 2
+fi
+
 # ---------- 环境：把 _common.sh 的 exit 1 收敛成 rc=3（否则会撞上「1=未找到」） ----------
 DEVICE=""
 env_guard() {
@@ -146,27 +160,8 @@ env_guard() {
 }
 
 # ---------- 取值 ----------
-secret_perm() {  # <file> → 八进制权限
-  if stat -f '%Lp' "$1" >/dev/null 2>&1; then stat -f '%Lp' "$1"; else stat -c '%a' "$1"; fi
-}
-
-read_secret() {  # <file> [key] → stdout 值
-  local file="$1" key="${2:-}" line k v
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in ''|'#'*) continue ;; esac
-    case "$line" in *=*) : ;; *) continue ;; esac
-    k="${line%%=*}"
-    v="${line#*=}"
-    k="$(printf '%s' "$k" | tr -d '[:space:]')"
-    if [ -n "$key" ]; then
-      [ "$k" = "$key" ] && { printf '%s' "$v"; return 0; }
-    else
-      printf '%s' "$v"; return 0
-    fi
-  done < "$file"
-  return 1
-}
-
+# 凭据解析唯一实现：scripts/_secret.py（扁平 KEY=VALUE + [acct:<名字>] 账号组）。
+# ⚠️ 取值成功后必须置 SECRET=true：它是下方输出脱敏（****）的开关，删掉等于把凭据打进日志。
 load_text() {
   if [ "$TEXT_SET" = true ]; then
     return 0
@@ -178,17 +173,10 @@ load_text() {
   fi
   # ⚠️ 变量后紧跟中文全角标点必须写成 ${VAR}：`$VAR` 直接接全角括号时，部分 locale 下
   #    多字节字符首字节会被吞进变量名 ⇒ `set -u` 报「TEXT_FROM<乱码>: unbound variable」（2026-11-12 实测）
-  [ -f "$TEXT_FROM" ] || { echo "❌ 凭据文件不存在: ${TEXT_FROM}（先由人工创建，勿入库）" >&2; return 2; }
-  local perm
-  perm=$(secret_perm "$TEXT_FROM")
-  if [ "$perm" != "600" ]; then
-    echo "❌ 凭据文件权限为 ${perm}，要求 600：chmod 600 $TEXT_FROM" >&2
-    return 2
-  fi
-  TEXT=$(read_secret "$TEXT_FROM" "$KEY_NAME") || {
-    echo "❌ 凭据文件里没有可用的 KEY=VALUE（--key '${KEY_NAME}'）" >&2
-    return 2
-  }
+  local args=("$SCRIPTS/_secret.py" get --file "$TEXT_FROM")
+  if [ -n "$ACCOUNT" ]; then args+=(--account "$ACCOUNT"); fi
+  if [ -n "$KEY_NAME" ]; then args+=(--key "$KEY_NAME"); fi
+  TEXT="$(python3 "${args[@]}")" || return 2
   SECRET=true
   return 0
 }
@@ -473,7 +461,7 @@ if [ "$CLEAR_ONLY" = false ]; then
     echo "💡 改用 Maestro：写 flow 用 eraseText + inputText（Android 可用），见 references/maestro-flow-snippets.md" >&2
     exit 8
   fi
-  [ -n "$TEXT" ] || { echo "❌ 取到的文本为空（检查凭据文件 / --key）"; exit 2; }
+  [ -n "$TEXT" ] || { echo "❌ 取到的文本为空（检查凭据文件 / --key / --account）"; exit 2; }
 fi
 [ -d "$LOG_DIR" ] || mkdir -p "$LOG_DIR"
 

@@ -48,7 +48,7 @@ metadata:
 > 后者让「点没点中」无人判定，最后把「点不中」误报成功能 Bug。
 
 **输入**（登录/搜索/表单一律走脚本，不要拼 `adb shell input text`）：
-- `bash <S>/scripts/android/input.sh --field <关键词> (--text <值>|--text-from <凭据文件>) [--mask]`
+- `bash <S>/scripts/android/input.sh --field <关键词> (--text <值>|--text-from <凭据文件> [--account <组名>] [--key <角色>]) [--mask]`
   一次调用完成「定位 → **焦点自检** → **清空** → 分段输入 → 读回校验 → 不符重试 1 次」，rc 见命令表。
 - **必须先清空再输入**：`input text` 是追加语义，旧内容留着就会变成 `alicealice`（本项目踩过）。
 - **必须读回校验**：密码框语义值常为空或圆点 ⇒ `--mask`（只比长度），并在回报里写「内容未验证」。
@@ -57,8 +57,12 @@ metadata:
 - **敏感值走 `--text-from`**（`init.sh` 生成的 `.debug-login.secret`，权限 600、已在 `.gitignore`），
   不要写进任务书/命令行；`--text` 只用于非敏感串。校验用快照含明文，脚本只在临时文件里用它、退出即删；
   `build/debug/interact/*.json` 只记字段/长度，不含值。
+- **多测试账号**：凭据文件支持 `[acct:<组名>]` 分组（组内 `ACCOUNT=` / `PASSWORD=`），取用时加
+  `--account <组名> [--key PASSWORD]`；`--account` 只能配 `--text-from <文件>`（配 `--text`/stdin 直接 rc=2）。
+  ⚠️ 读回校验只证明「值写进了框」，**不证明登的是哪个号** ⇒ 登录后用 `assert_page.sh has:<账号标识>` 断言；
+  切号前先登出，别靠「再登一次」覆盖会话。组名可 `python3 <S>/scripts/_secret.py list --file <凭据文件>` 查。
 - **中文/emoji 不可用 `input text`**（rc=8）⇒ 改走 Maestro `eraseText` + `inputText`（见 `references/maestro-flow-snippets.md`）。
-- iOS 真机同理：`driver.py find-type --clear`（默认开）+ 读回校验；`flow` 的 `type` 步骤 `"clear"` 缺省 `true`；
+- iOS 真机同理：`driver.py find-type --clear`（默认开）+ 读回校验（多账号加 `--text-from <文件> --account <组名>`）；`flow` 的 `type` 步骤 `"clear"` 缺省 `true`；
   文本为空一律 rc=2（模板里 `ACCOUNT=` 是空值，别把「什么也没输」当成功）。
 
 **点击**（每次点击都要有回执）：
@@ -165,7 +169,7 @@ metadata:
 
 单元测试与平台无关：`bash <S>/scripts/test.sh [路径]`。
 脚本层回归**统一入口**（不需真机）：`bash <S>/scripts/test_all.sh`（rc `0` 全过 / `1` 有失败 / `2` 用法错）。
-默认串联七项：`test_common.sh`（.debug.env 解析 + Android 非 Flutter 支持）、`test_bg.sh -f 静态`（语法 + 多字节隐患）、`test_snapshot.sh`（快照解析 + 断言 + 点击选点/缓存 + `--diff` 变化判定 + 断言失败附 diff + `--wait` 轮询 + `--single-dump`/`--cache-payload`，296 项离线用例）、`test_safe_run.sh`（沙箱入口负控制：凭证面/写面/出网面/fail-closed/真机通道/build profile 的 SDK 缓存（含软链解析）与 trustd，**43 项**；非 macOS 自动跳过）、`test_build_metrics.sh`（`INTERNAL_METRICS` 内测包状态机：注入/还原/pending/sha 守卫/模式沿用，**27 项**，stub 构建、非 macOS 与沙箱内跳过）、`test_ios_common.sh`（`ios/_common.sh` 纯函数：syslog 行正则转义与头部锚定、App 可执行名四级回退，**12 项**）、`test_interact.sh`（输入/点击回执/坑表：`input.sh` 逐 rc + 清空/掩码/`--append`/`--text-from`/`--editable-index`/占位符哨兵探测、`tap_verify.sh` 的「已变不重点」「危险词禁二击」、`pitfall_append.sh` 去重，**137 项**，adb 桩会在 `ui.xml` 上真改内容）；加 `--full` 额外跑 `test_bg.sh` 全量行为用例（较慢）。
+默认串联七项：`test_common.sh`（.debug.env 解析 + Android 非 Flutter 支持）、`test_bg.sh -f 静态`（语法 + 多字节隐患）、`test_snapshot.sh`（快照解析 + 断言 + 点击选点/缓存 + `--diff` 变化判定 + 断言失败附 diff + `--wait` 轮询 + `--single-dump`/`--cache-payload`，296 项离线用例）、`test_safe_run.sh`（沙箱入口负控制：凭证面/写面/出网面/fail-closed/真机通道/build profile 的 SDK 缓存（含软链解析）与 trustd，**43 项**；非 macOS 自动跳过）、`test_build_metrics.sh`（`INTERNAL_METRICS` 内测包状态机：注入/还原/pending/sha 守卫/模式沿用，**27 项**，stub 构建、非 macOS 与沙箱内跳过）、`test_ios_common.sh`（`ios/_common.sh` 纯函数：syslog 行正则转义与头部锚定、App 可执行名四级回退，**12 项**）、`test_interact.sh`（输入/点击回执/坑表：`input.sh` 逐 rc + 清空/掩码/`--append`/`--text-from`/`--account` 账号组/`--editable-index`/占位符哨兵探测、`tap_verify.sh` 的「已变不重点」「危险词禁二击」、`pitfall_append.sh` 去重，**184 项**，adb 桩会在 `ui.xml` 上真改内容）；加 `--full` 额外跑 `test_bg.sh` 全量行为用例（较慢）。
 离线用例的测试钩子（正常使用不要设）：`SNAPSHOT_INPUT=<xml|csv>`（`snapshot.sh` 跳过 dump 走完整解析/写缓存路径）、`SNAPSHOT_BIN=<script>`（`assert_page.sh` / `tap_snapshot.sh` 替换取快照；`assert_page --wait` 通过后的 `--cache-payload` 落盘仍走真实脚本）。
 
 ## 长任务后台模式（bg.sh）
@@ -245,7 +249,7 @@ bash <S>/scripts/test_bg.sh -f clamp # 只跑某组
 | `swipe.sh x1 y1 x2 y2 [ms]` | 滑动 |
 | `settle.sh [--mode auto\|ui\|screen] [--timeout 25] [--interval 0.4] [--keep]` | **等 UI 静止**。默认 `--mode auto`：语义树可用则比两帧 `uiautomator dump`，**语义树无内容（0 个 text/desc 节点）或 dump 连续失败/持续不完整时自动降级整屏像素**（`screencap -p` 比对）。滑动/点击后**先 settle 再 `shot.sh`/`ui.sh`**，避免把动画中间帧当「页面错乱」。退出码：`0`=已静止（输出必带 `判据=ui\|screen`）/ `1`=超时未静止（⚠️ 文案 + 替代手段，不是异常）/ `2`=用法错 / `3`=**判定不可信**（仅 `--mode ui`：语义树无内容、dump 持续失败或不完整；本 3 ≠ `bg.sh` 的 3=LOST）。失败默认保留两帧在 `build/debug/.settle_*`，`--keep` 时成功也保留；screen 阶段一帧都取不到时终报「整屏截图始终不可用」（不谎报「未静止」） |
 | `findtap.sh <关键词> [--max 6] [--dir down\|up] [--wait 0.4]` | **滑动查找并点击**（等价 `scroll --until`）：目标不在当前屏时自动滚动，省掉「滑一次、dump 一次」的手工循环。匹配语义与 `tap.sh --text` 一致（字面包含、忽略大小写、非正则）；命中的文本节点非 `clickable` 时按节点中心坐标兜底并**在输出中注明**。**语义树无内容时首轮立即失败**（不白滑 `--max` 屏）并给 Maestro → Vision → 坐标三级降级路径。退出码：`0`=命中并点击 / `1`=`--max` 次后仍未命中**或语义树无内容** / `2`=用法错 |
-| `input.sh (--field <关键词> \| --id <元素id> \| --editable-index N) (--text <值>\|--text-from [文件]\|--text-stdin) [--key NAME] [--mask] [--append] [--clear-only] [--index N] [--max-retry 1] [--slow] [--one-key] [--no-probe] [--dry-run]` | **输入框闭环**：定位（`--field` 匹配 text/id 子串；`--id` 只匹配 id 字段；`--editable-index N` 按「页面上第 N 个可编辑框」定位——用于**既无 text 也无 id** 的输入框，Flutter/Compose 常见，2026-11-12 真机实测）→ **焦点自检**（`dumpsys input_method` 的 `mInputShown=false` ⇒ rc=7 且**未删未输**，防 DEL 落到别的框；该字段在部分 ROM 缺失时只告警）→ **清空**（`MOVE_END` + `KEYCODE_DEL`×(len+3)，`--one-key` 逐发兼容老 ROM）→ 分段输入（≤20 字符/段，`--slow` 段间隔 0.6 s）→ **读回校验**（按 `bounds` 精确定位；漂移时退「可编辑框序号 / 关键词 + 仅可编辑节点 + 同 id/total」复定位；拿不到唯一可编辑节点就按读回失败处理；校验阶段语义树重取一次仍空 ⇒ rc=4，不混成 rc=6）→ 不符重试一次（重试前重新定位并复检焦点；⚠️ `--append` 不自动重试——重试会清空旧内容，把追加变替换）。`--text-from` 缺省读项目根 `.debug-login.secret`（`init.sh` 生成、0600、已入 `.gitignore`），掩码/凭据来源输出恒 `****`；校验用快照写临时文件、退出即删。⚠️ `adb input text` **只支持 ASCII**（中文/emoji ⇒ rc=8 改走 Maestro `eraseText`+`inputText`）；字面 `%s` 会被当空格（框架限制）。退出码：`0` 通过 / `1` 未找到（附候选）/ `2` 用法或凭据权限错 / `3` 环境不可用 / `4` 语义树为空 / `5` 清空失败（`--clear-only` 读回非空时先做**占位符哨兵探测**：空框的 hint 会被语义树当成 text，2026-11-12 实测；探测会向框内输入 1 个字符再删掉，有副作用时用 `--no-probe` 关闭） / `6` 读回不符 / `7` 派发失败或**点击未获焦点（未做任何删除/输入）** / `8` 含非 ASCII |
+| `input.sh (--field <关键词> \| --id <元素id> \| --editable-index N) (--text <值>\|--text-from [文件]\|--text-stdin) [--account NAME] [--key NAME] [--mask] [--append] [--clear-only] [--index N] [--max-retry 1] [--slow] [--one-key] [--no-probe] [--dry-run]` | **输入框闭环**：定位（`--field` 匹配 text/id 子串；`--id` 只匹配 id 字段；`--editable-index N` 按「页面上第 N 个可编辑框」定位——用于**既无 text 也无 id** 的输入框，Flutter/Compose 常见，2026-11-12 真机实测）→ **焦点自检**（`dumpsys input_method` 的 `mInputShown=false` ⇒ rc=7 且**未删未输**，防 DEL 落到别的框；该字段在部分 ROM 缺失时只告警）→ **清空**（`MOVE_END` + `KEYCODE_DEL`×(len+3)，`--one-key` 逐发兼容老 ROM）→ 分段输入（≤20 字符/段，`--slow` 段间隔 0.6 s）→ **读回校验**（按 `bounds` 精确定位；漂移时退「可编辑框序号 / 关键词 + 仅可编辑节点 + 同 id/total」复定位；拿不到唯一可编辑节点就按读回失败处理；校验阶段语义树重取一次仍空 ⇒ rc=4，不混成 rc=6）→ 不符重试一次（重试前重新定位并复检焦点；⚠️ `--append` 不自动重试——重试会清空旧内容，把追加变替换）。`--text-from` 缺省读项目根 `.debug-login.secret`（`init.sh` 生成、0600、已入 `.gitignore`），掩码/凭据来源输出恒 `****`；多账号用 `--account <组名>` 取 `[acct:<组名>]` 组内 `--key`（缺省 `ACCOUNT`），组/角色不存在、配 `--text`/stdin 均 rc=2（错误信息列出可用组/角色，不含值）；校验用快照写临时文件、退出即删。⚠️ `adb input text` **只支持 ASCII**（中文/emoji ⇒ rc=8 改走 Maestro `eraseText`+`inputText`）；字面 `%s` 会被当空格（框架限制）。退出码：`0` 通过 / `1` 未找到（附候选）/ `2` 用法或凭据权限错 / `3` 环境不可用 / `4` 语义树为空 / `5` 清空失败（`--clear-only` 读回非空时先做**占位符哨兵探测**：空框的 hint 会被语义树当成 text，2026-11-12 实测；探测会向框内输入 1 个字符再删掉，有副作用时用 `--no-probe` 关闭） / `6` 读回不符 / `7` 派发失败或**点击未获焦点（未做任何删除/输入）** / `8` 含非 ASCII |
 
 ## Maestro 命令（<S>/scripts/maestro/ — Android / iOS 模拟器）
 
@@ -334,7 +338,7 @@ flutter test integration_test/<file>.dart -d <simulator_udid>
 命令表与排障见 `references/platform-extra.md`。执行前必记三条：
 
 - **Appium 不可逆副作用**：路线 A 自动签名会在设备未注册时自动注册设备（占用团队年度额度）并创建/更新描述文件；iOS 真机需 `IOS_TEAM_ID`，且必须是 profile/release 包（debug 包 JIT 受限）。
-- **Appium 输入纪律**：默认先清空再输入并读回校验；追加须显式 `--no-clear` / `{"clear": false}` 且不自动重试；密码用 `--mask`，敏感值用 `--text-from <文件>`。
+- **Appium 输入纪律**：默认先清空再输入并读回校验；追加须显式 `--no-clear` / `{"clear": false}` 且不自动重试；密码用 `--mask`，敏感值用 `--text-from <文件>`（多账号加 `--account <组名>`，仅与文件同用）。
 - **macOS 智能点击**：`smart_tap.sh` / `smart_assert.sh` 含护栏（置信度 <0.7、危险词、loading/白屏时拒点）；需「屏幕录制」+「辅助功能」权限；排障读 `references/macos-smart.md`。
 
 ## 测试分层策略

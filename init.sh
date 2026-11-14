@@ -224,6 +224,11 @@ if [ ! -f "$SECRET_FILE" ]; then
 # debug-loop 调试用登录凭据（KEY=VALUE，一行一个）
 # ⚠️ 必须保持 0600，且不要提交到 git（init.sh 已自动加入 .gitignore）
 # 用法: bash <S>/scripts/android/input.sh --field 账号 --text-from .debug-login.secret --key ACCOUNT
+# 多账号（可选）：每组以 [acct:<名字>] 开头，组内写 ACCOUNT= / PASSWORD=；取用时加
+#   --account <名字>（缺省角色 ACCOUNT；密码加 --key PASSWORD --mask）。例：
+# [acct:buyer]
+# ACCOUNT=
+# PASSWORD=
 ACCOUNT=
 PASSWORD=
 SEOF
@@ -231,9 +236,9 @@ SEOF
   echo "🔐 生成凭据模板: ${SECRET_FILE}（权限 600；填值后 input.sh --text-from 直接可用）"
 fi
 GI="$(pwd)/.gitignore"
-if ! { [ -f "$GI" ] && grep -qxF ".debug-login.secret" "$GI"; }; then
-  printf '\n# debug-loop 登录凭据（勿入库）\n.debug-login.secret\n' >> "$GI" 2>/dev/null || true
-  echo "🧷 已把 .debug-login.secret 加入 .gitignore"
+if ! { [ -f "$GI" ] && grep -qxF ".debug-login*.secret" "$GI"; }; then
+  printf '\n# debug-loop 登录凭据（勿入库；含每账号一个文件的 .debug-login.<名字>.secret）\n.debug-login*.secret\n' >> "$GI" 2>/dev/null || true
+  echo "🧷 已把 .debug-login*.secret 加入 .gitignore"
 fi
 
 echo ""

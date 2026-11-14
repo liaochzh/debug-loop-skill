@@ -33,9 +33,11 @@ autoDebug 早期存在「提前返回」：只执行 2~3 步就返回、或因�
 >   禁止用方法名猜测（`play()` ≠ `play() called`）。签名写错 → 必然空等到超时。
 
 输入要求（**有输入步骤就必填**）：
-- 字段 → 值一律写成 `<secret:KEY>` 引用，**不要写明文**（会话记录/日志会留痕）：
+- 字段 → 值一律写成 `<secret:KEY>` 引用（多账号写 `<secret:<组名>/KEY>`），**不要写明文**（会话记录/日志会留痕）：
   `账号 = <secret:ACCOUNT>`、`密码 = <secret:PASSWORD>`（来自项目根 0600 的 `.debug-login.secret`）
 - Android：`bash <S>/scripts/android/input.sh --field 账号 --text-from .debug-login.secret --key ACCOUNT`
+  （多账号加 `--account <组名>`：取文件里 `[acct:<组名>]` 组内的 `--key`，缺省 `ACCOUNT`；组名可用
+  `python3 <S>/scripts/_secret.py list --file .debug-login.secret` 查，不含值）
   密码加 `--mask`；中文/emoji ⇒ 改 Maestro `eraseText` + `inputText`（`input.sh` 会 rc=8）
 - 输入框**既无 text 也无 id**（Flutter/Compose 常见）⇒ 用 `--editable-index N`（页面上第 N 个可编辑框，上→下排序；
   先 `snapshot.sh --json` 数一下）。不要用「上一次的输入内容」当 `--field`：内容一被替换，读回就找不到框
@@ -106,7 +108,7 @@ autoDebug 的 shell 权限是**按命令串前缀匹配**的：`shell *` = deny�
 - [ ] **是否写明起始页面状态**（登录页 / 已登录 / 首启协议页）以及**是否允许清数据**？未写清时子代理会自行 `adb shell pm clear`，复现前提漂移
 - [ ] 等待页面就绪是否用 `android/settle.sh` 或 `adb shell sleep N`（裸 `sleep` 不在白名单，会被秒拒）
 - [ ] 步骤是否**编号、具体、可执行**（而不是「测一下登录」这种模糊描述）
-- [ ] **有输入步骤**时：字段→值是否写成 `<secret:KEY>`（无明文）？是否指明走 `input.sh` / `find-type`，并要求回报「读回校验」结果？
+- [ ] **有输入步骤**时：字段→值是否写成 `<secret:KEY>`（多账号 `<secret:<组名>/KEY>`，无明文）？是否指明走 `input.sh` / `find-type`（多账号带 `--account <组名>`），并要求回报「读回校验」结果？
 - [ ] **有点击步骤**时：每条点击是否写了「点完看到什么」（`--expect has:…` / `none`）？是否说明 `rc=0 ≠ 点中`？
 - [ ] 完成标准是否**可判定**（有明确日志关键字或页面元素，而非「看起来正常」）
 - [ ] 若判据是日志签名：是否已在源码 `grep` 确认该字符串存在（防 `play() called` 这类凭空签名）

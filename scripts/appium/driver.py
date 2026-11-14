@@ -6,9 +6,10 @@
 #   driver.py find-click  --server <url> --caps <caps.json> [--using "accessibility id"] [--value "登录"]
 #   driver.py find-assert --server <url> --caps <caps.json> [--using ...] [--value ...]
 #   driver.py find-type   --server <url> --caps <caps.json> [--using ...] [--value ...]
-#                         (--text "要输入的文字" | --text-from <KEY=VALUE 文件|->  [--key NAME])
+#                         (--text "要输入的文字" | --text-from <凭据文件|->  [--key ROLE] [--account 组名])
 #                         [--clear|--no-clear] [--mask] [--expect "<期望读回值>"]
 #                         ⚠️ 默认先清空再输入，输入后读回校验（不符 rc=1）；敏感值用 --text-from
+#                         --account 只对凭据文件有效：取 [acct:<组名>] 组内的 --key（缺省 ACCOUNT）
 #                         --expect：输入后额外断言 attribute/value 等于该值（输入会被平台转换时用），
 #                         掩码字段只比长度；不符 rc=1
 #   driver.py screenshot  --server <url> --caps <caps.json> --out <path.png>
@@ -44,6 +45,8 @@ import requests
 # 两处各写一份必然漂移（历史教训：settle.sh 的 PREV 自比 ⇒ 假「已静止」）。
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import _field_target as field  # noqa: E402
+# 凭据解析唯一实现（与 android/input.sh 共用）：权限纪律/单行原文回退/账号组只在这里维护
+import _secret  # noqa: E402
 
 W3C_ELEMENT_KEY = "element-6066-11e4-a52e-4f735466cecf"
 JSONWP_ELEMENT_KEY = "ELEMENT"
@@ -408,41 +411,30 @@ def get_screenshot(server, sid, out):
     return out
 
 
-def _load_text_source(path, key=""):
-    """读 --text-from：KEY=VALUE 行（可用 --key 选行）或单行原文；'-' 走 stdin。
+def _load_text_source(path, key="", account=""):
+    """读 --text-from：凭据文件（扁平 KEY=VALUE 或 [acct:<名字>] 账号组）；'-' 走 stdin。
 
-    权限纪律：非 stdin 一律要求 0600（与 android/input.sh 一致），避免把密码文件
-    放进仓库时人人可读；权限不符按用法错（rc=2）处理，不静默继续。
+    解析唯一实现是 scripts/_secret.py（与 android/input.sh 共用）：0600 纪律、单行原文
+    回退（历史 driver 用法）、组名/角色校验都只在那里维护，避免两套语义分叉。
     """
     if path == "-":
+        if account:
+            print("❌ --account 只能与 --text-from <文件> 同用", file=sys.stderr)
+            sys.exit(2)
         raw = sys.stdin.read()
-    else:
+        if not [ln for ln in raw.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]:
+            print("❌ --text-from 内容为空", file=sys.stderr)
+            sys.exit(2)
         try:
-            st = os.stat(path)
-        except OSError as exc:
-            print(f"❌ --text-from 无法读取: {exc}", file=sys.stderr)
+            return _secret.load_text(raw, key=key or None)
+        except _secret.SecretError as exc:
+            print(f"❌ {exc}", file=sys.stderr)
             sys.exit(2)
-        if st.st_mode & 0o077:
-            print(f"❌ {path} 权限为 {oct(st.st_mode & 0o777)}，要求 600：chmod 600 {path}", file=sys.stderr)
-            sys.exit(2)
-        with open(path, encoding="utf-8") as fh:
-            raw = fh.read()
-    lines = [ln for ln in raw.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
-    if not lines:
-        print("❌ --text-from 内容为空", file=sys.stderr)
+    try:
+        return _secret.load(path, account or None, key or None)
+    except _secret.SecretError as exc:
+        print(f"❌ {exc}", file=sys.stderr)
         sys.exit(2)
-    if key:
-        for ln in lines:
-            if "=" in ln:
-                k, v = ln.split("=", 1)
-                if k.strip() == key:
-                    return v
-        print(f"❌ --text-from 里没有 {key}=…", file=sys.stderr)
-        sys.exit(2)
-    first = lines[0]
-    if len(lines) == 1 and "=" not in first:
-        return first
-    return first.split("=", 1)[1] if "=" in first else first
 
 
 def main():
@@ -453,8 +445,10 @@ def main():
     p.add_argument("--using", default="accessibility id")
     p.add_argument("--value", default="")
     p.add_argument("--text", default="", help="find-type 要输入的文字（与 --text-from 互斥）")
-    p.add_argument("--text-from", default="", help="find-type 从 KEY=VALUE 文件读（'-' = stdin；须 0600）")
-    p.add_argument("--key", default="", help="--text-from 取哪一行（缺省第一条）")
+    p.add_argument("--text-from", default="", help="find-type 从凭据文件读（'-' = stdin；group/other 位须为空）")
+    p.add_argument("--key", default="", help="--text-from 取哪个键（组内缺省 ACCOUNT；扁平档缺省第一条）")
+    p.add_argument("--account", default="",
+                   help="--text-from 取哪个账号组（[acct:名字]）；与 --text / stdin 互斥")
     p.add_argument("--clear", dest="clear", action="store_true", default=True,
                    help="find-type 先清空（默认开；旧内容不清空是登录输错的主因）")
     p.add_argument("--no-clear", dest="clear", action="store_false", help="find-type 追加而非替换")
@@ -491,6 +485,22 @@ def main():
             print("steps 必须是非空数组", file=sys.stderr)
             sys.exit(2)
 
+    # 参数级校验先于建会话：错参数不该启动 App（也让离线断言可测）
+    if args.account and args.action != "find-type":
+        print("❌ --account 只用于 find-type", file=sys.stderr)
+        sys.exit(2)
+    if args.action == "find-type":
+        if args.text and args.text_from:
+            print("--text 与 --text-from 互斥", file=sys.stderr)
+            sys.exit(2)
+        if not args.text and not args.text_from:
+            print("find-type 需要 --text 或 --text-from（敏感值建议用文件，避免进会话记录）", file=sys.stderr)
+            sys.exit(2)
+        # --account 只对凭据文件有意义：配 --text / stdin 会「以为切了组、实际没切」⇒ 直接拒
+        if args.account and (args.text or not args.text_from or args.text_from == "-"):
+            print("❌ --account 只能与 --text-from <文件> 同用", file=sys.stderr)
+            sys.exit(2)
+
     sid = None
     try:
         sid = start_session(args.server, caps)
@@ -514,16 +524,10 @@ def main():
             print("--value 必填", file=sys.stderr)
             sys.exit(2)
         if args.action == "find-type":
-            if args.text and args.text_from:
-                print("--text 与 --text-from 互斥", file=sys.stderr)
-                sys.exit(2)
-            if not args.text and not args.text_from:
-                print("find-type 需要 --text 或 --text-from（敏感值建议用文件，避免进会话记录）", file=sys.stderr)
-                sys.exit(2)
-            text = args.text or _load_text_source(args.text_from, args.key)
+            text = args.text or _load_text_source(args.text_from, args.key, args.account)
             if text == "":
                 # 空值先拦：清空后 verify("","") 会假通过（凭据模板里 ACCOUNT= 就是空）
-                print("❌ 取到的文本为空（检查 --text-from / --key）", file=sys.stderr)
+                print("❌ 取到的文本为空（检查 --text-from / --key / --account）", file=sys.stderr)
                 sys.exit(2)
         else:
             text = ""

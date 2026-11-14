@@ -187,3 +187,13 @@
 - `settle.sh` 的 `SLOT` 按 `SAMPLES` 奇偶轮转，**失败的那轮也递增 SAMPLES** ⇒ 只要失败分支不清 `PREV`，下一次成功采样就会 `cmp` 同路径自比、单帧判静止（review 抓到的 P1）。
 - 完整性检查前移到语义检查之前后会**丢掉降级出口**（auto 模式空烧 timeout）——顺序调整必须同时补计数上限与降级/退出。
 - `test_common.sh` 的全局 adb 桩 `exec-out` 只有 ~20 B，G12 必须自建 `$TMPROOT/g12bin/adb`（case-local PATH，落文件末尾，不污染 G1–G11）。
+
+## 多测试账号（2026-11-12，方案 C）
+
+- 凭据文件新增账号组 `[acct:<名字>]`（组内 `ACCOUNT=` / `PASSWORD=`），两入口新增 `--account <名字>`；解析统一到 `scripts/_secret.py`（`get` / `list`），`input.sh` 与 `appium/driver.py` 不再各写一套扁平解析。
+- 兼容：扁平 `KEY=VALUE` 行为不变；单行无 `=` 仍整行取值（driver 旧用法）；`--account` 与 `--text`/stdin 互斥（rc=2）；组/角色缺失 rc=2 并列出可用项（不含值）。权限口径统一为「只拒 group/other 位」。
+- 验证：`test_interact.sh` **184 项**全过（新增 I6 共 47 项：A/B 组哨兵值防串组、`--mask` 不泄露、`list` 不含值、重名/非法组/组内畸形行与重复键 rc=2、driver 文件与 stdin 取值路径、driver 参数前置校验、stdin 形态的 fail-closed 组合）；`test_bg.sh -f 静态` 2 项通过；`py_compile` 通过。注：其中 9 条 driver 断言需 `requests`，缺依赖时打印 ⏭️ 跳过（总数 175，不假绿）。
+- 顺带修既有缺陷：`input.sh` 的 `--text-from -` 原被当成未知参数（文档却说等价 stdin）⇒ 现真正走 stdin，并有用例锁住；stdin 配 `--key` 改为 rc=2（不再静默忽略键名）。
+- 未做：真机两组账号各登录一次 + `assert_page has:<账号标识>`（读回校验只证明值写进了框，不证明身份）；`.debug.env` 不做 flavor→账号映射；`flow` 的 `type` 步骤仍只收内联 text。
+- 坑：`references/maestro-flow-snippets.md` 原建议 `source .debug-login.secret`，含组头行会被当命令执行 ⇒ 已改为 `_secret.py get` 命令替换。
+- 方案/审查：`docs/plan/20261112-multi-account-secret{,.review}.md`。

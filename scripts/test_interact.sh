@@ -8,7 +8,7 @@
 #
 # 覆盖点:
 #   _field_target 纯函数（清空次数/掩码下限/读回比对）
-#   android/input.sh 退出码 0/1/2/3/4/5/6/7/8 与 --dry-run/--append/--clear-only/--mask/--text-from
+#   android/input.sh 退出码 0/1/2/3/4/5/6/7/8 与 --dry-run/--append/--clear-only/--mask/--text-from/--account
 #   tap_verify.sh rc=0/1/2/3 与「页面已变不再点」「危险词禁二击」「--allow-danger」
 #   pitfall_append.sh 追加/去重/用法错/竖线转义
 set -uo pipefail
@@ -648,6 +648,161 @@ if run_case "I4-env"; then
   OUT=$(run_in "$P" "$S" AB_NO_DEVICE=1 -- bash "$SCRIPT_DIR/android/input.sh" --field account --text abc 2>&1); RC=$?
   expect_rc "I4 无设备 → rc=3（不是 1）" 3 "$RC"
   expect_contains "I4 明确「环境不可用」" "环境不可用" "$OUT"
+fi
+
+# ---------- I6 多测试账号（[acct:名字] 账号组 + --account） ----------
+if run_case "I6-account"; then
+  echo "--- I6 账号组（多测试账号，值两两不同防串组） ---"
+  P=$(mk_proj i6)
+  SEC="$P/secret.multi"
+  cat > "$SEC" <<'SEOF'
+# 值两两不同：断言取到 A 值即证明没串到 B/扁平档
+ACCOUNT=flat-acct
+PASSWORD=flat-pw
+[acct:buyer]
+ACCOUNT=acctA1
+PASSWORD=pwA1
+[acct:merchant]
+ACCOUNT=acctB1
+PASSWORD=pwB1
+SEOF
+  chmod 600 "$SEC"
+
+  OUT=$(python3 "$SCRIPT_DIR/_secret.py" get --file "$SEC" --account buyer --key ACCOUNT 2>&1); RC=$?
+  expect_rc   "I6 _secret 组内取 ACCOUNT → rc=0" 0 "$RC"
+  expect_eq   "I6 取到 A 组账号" "acctA1" "$OUT"
+  OUT=$(python3 "$SCRIPT_DIR/_secret.py" get --file "$SEC" --account merchant --key PASSWORD 2>&1)
+  expect_eq   "I6 取到 B 组密码（不串组）" "pwB1" "$OUT"
+  OUT=$(python3 "$SCRIPT_DIR/_secret.py" get --file "$SEC" --account buyer 2>&1)
+  expect_eq   "I6 缺省角色 ACCOUNT" "acctA1" "$OUT"
+
+  OUT=$(python3 "$SCRIPT_DIR/_secret.py" get --file "$SEC" --account ghost 2>&1); RC=$?
+  expect_rc       "I6 组不存在 → rc=2" 2 "$RC"
+  expect_contains "I6 列出可用组" "可用组: buyer, merchant" "$OUT"
+  expect_not_contains "I6 错误信息不含组内值" "acctA1" "$OUT"
+
+  OUT=$(python3 "$SCRIPT_DIR/_secret.py" get --file "$SEC" --account buyer --key PIN 2>&1); RC=$?
+  expect_rc       "I6 角色不存在 → rc=2" 2 "$RC"
+  expect_contains "I6 列出可用角色" "可用角色: ACCOUNT, PASSWORD" "$OUT"
+
+  OUT=$(python3 "$SCRIPT_DIR/_secret.py" get --file "$SEC" --key ACCOUNT 2>&1)
+  expect_eq "I6 扁平模式忽略组头" "flat-acct" "$OUT"
+
+  # 单行原文（driver 历史用法，不得因统一解析而断裂）
+  ONELINE="$P/oneline"; printf 'plainpass\n' > "$ONELINE"; chmod 600 "$ONELINE"
+  OUT=$(python3 - "$SCRIPT_DIR" "$ONELINE" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import _secret
+print(_secret.load(sys.argv[2]))
+PY
+); RC=$?
+  expect_rc "I6 单行无 = 整行取值 → rc=0" 0 "$RC"
+  expect_eq "I6 单行原文" "plainpass" "$OUT"
+
+  # driver 侧取值路径（统一解析后仍要能用；requests 缺失则跳过，不假绿）
+  if python3 -c 'import requests' >/dev/null 2>&1; then
+    OUT=$(python3 - "$SCRIPT_DIR" "$SEC" "$ONELINE" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1] + "/appium")
+import driver
+print(driver._load_text_source(sys.argv[2], "PASSWORD", "buyer"))
+print(driver._load_text_source(sys.argv[3]))
+PY
+); RC=$?
+    expect_rc       "I6 driver 取值路径 → rc=0" 0 "$RC"
+    expect_contains "I6 driver 组内取值" "pwA1" "$OUT"
+    expect_contains "I6 driver 单行回退保留" "plainpass" "$OUT"
+
+    # driver stdin 分支必须仍按 --key 选行（旧实现支持；统一解析后曾回归成「静默取第一行」）
+    OUT=$(printf 'ACCOUNT=stdin-a\nPASSWORD=stdin-p\n' | python3 -c 'import sys; sys.path.insert(0, sys.argv[1] + "/appium"); import driver; print(driver._load_text_source("-", "PASSWORD"))' "$SCRIPT_DIR" 2>&1); RC=$?
+    expect_rc "I6 driver stdin 按 --key 取行 → rc=0" 0 "$RC"
+    expect_eq "I6 driver stdin 取到 PASSWORD" "stdin-p" "$OUT"
+    OUT=$(printf 'ACCOUNT=stdin-a\n' | python3 -c 'import sys; sys.path.insert(0, sys.argv[1] + "/appium"); import driver; print(driver._load_text_source("-", "PASSWORD"))' "$SCRIPT_DIR" 2>&1); RC=$?
+    expect_rc "I6 driver stdin 缺该 key → rc=2" 2 "$RC"
+
+    # 参数级校验在建会话之前（caps={} 即可离线验），错参数不得启动 App
+    printf '{}' > "$P/caps.json"
+    OUT=$(python3 "$SCRIPT_DIR/appium/driver.py" find-type --caps "$P/caps.json" --value x --text a --account buyer 2>&1); RC=$?
+    expect_rc       "I6 driver --account 配 --text → rc=2" 2 "$RC"
+    expect_contains "I6 driver 互斥文案与 input.sh 一致" "只能与 --text-from <文件> 同用" "$OUT"
+    OUT=$(python3 "$SCRIPT_DIR/appium/driver.py" find-click --caps "$P/caps.json" --value x --account buyer 2>&1); RC=$?
+    expect_rc "I6 driver 非 find-type 用 --account → rc=2" 2 "$RC"
+  else
+    echo "  ⏭️  I6 driver 取值路径（缺 requests，跳过）"
+  fi
+
+  BAD="$P/bad"; printf '[acct:bad name]\nACCOUNT=x\n' > "$BAD"; chmod 600 "$BAD"
+  OUT=$(python3 "$SCRIPT_DIR/_secret.py" get --file "$BAD" --account x 2>&1); RC=$?
+  expect_rc "I6 非法组名 → rc=2" 2 "$RC"
+  DUP="$P/dup"; printf '[acct:a]\nACCOUNT=1\n[acct:a]\nACCOUNT=2\n' > "$DUP"; chmod 600 "$DUP"
+  OUT=$(python3 "$SCRIPT_DIR/_secret.py" get --file "$DUP" --account a 2>&1); RC=$?
+  expect_rc "I6 重名组 → rc=2" 2 "$RC"
+  MAL="$P/mal"; printf '[acct:a]\nACCOUNT\n' > "$MAL"; chmod 600 "$MAL"
+  OUT=$(python3 "$SCRIPT_DIR/_secret.py" get --file "$MAL" --key ACCOUNT 2>&1); RC=$?
+  expect_rc      "I6 组内畸形行 → rc=2（不漏进扁平档）" 2 "$RC"
+  expect_contains "I6 畸形行报错不回声内容" "缺少 =" "$OUT"
+  DUPK="$P/dupk"; printf '[acct:a]\nACCOUNT=1\nACCOUNT=2\n' > "$DUPK"; chmod 600 "$DUPK"
+  OUT=$(python3 "$SCRIPT_DIR/_secret.py" get --file "$DUPK" --account a 2>&1); RC=$?
+  expect_rc      "I6 组内重复键 → rc=2" 2 "$RC"
+
+  OUT=$(python3 "$SCRIPT_DIR/_secret.py" list --file "$SEC" 2>&1)
+  expect_contains     "I6 list 列出组名" "buyer" "$OUT"
+  expect_not_contains "I6 list 不含值" "pwA1" "$OUT"
+
+  chmod 644 "$SEC"
+  OUT=$(python3 "$SCRIPT_DIR/_secret.py" get --file "$SEC" --account buyer 2>&1); RC=$?
+  expect_rc       "I6 0644 → rc=2" 2 "$RC"
+  expect_contains "I6 给出 chmod 指引" "chmod 600" "$OUT"
+  chmod 600 "$SEC"
+
+  # input.sh 集成（adb 桩会真改 ui.xml）
+  S=$(fresh_state)
+  OUT=$(run_in "$P" "$S" -- bash "$SCRIPT_DIR/android/input.sh" --field account --text-from "$SEC" --account buyer --key ACCOUNT 2>&1); RC=$?
+  expect_rc           "I6 input.sh 取 A 组账号 → rc=0" 0 "$RC"
+  expect_eq           "I6 框内是 A 组账号（非 B/扁平）" "acctA1" "$(acct_text "$S/ui.xml")"
+  expect_contains     "I6 凭据来源输出脱敏" "****" "$OUT"
+  expect_not_contains "I6 stdout 不含明文" "acctA1" "$OUT"
+
+  S=$(fresh_state)
+  OUT=$(run_in "$P" "$S" -- bash "$SCRIPT_DIR/android/input.sh" --field password --text-from "$SEC" --account merchant --key PASSWORD --mask 2>&1); RC=$?
+  expect_rc           "I6 掩码密码组取值 → rc=0" 0 "$RC"
+  expect_not_contains "I6 掩码不泄露密码" "pwB1" "$OUT"
+
+  S=$(fresh_state)
+  OUT=$(run_in "$P" "$S" -- bash "$SCRIPT_DIR/android/input.sh" --field account --text-from "$SEC" --account ghost 2>&1); RC=$?
+  expect_rc       "I6 input.sh 组不存在 → rc=2" 2 "$RC"
+  expect_contains "I6 组名提示" "可用组" "$OUT"
+
+  S=$(fresh_state)
+  OUT=$(run_in "$P" "$S" -- bash "$SCRIPT_DIR/android/input.sh" --field account --text-from "$SEC" --account buyer --text x 2>&1); RC=$?
+  expect_rc "I6 --account 配 --text → rc=2" 2 "$RC"
+
+  S=$(fresh_state)
+  OUT=$(run_in "$P" "$S" -- bash "$SCRIPT_DIR/android/input.sh" --field account --text-stdin --account buyer 2>&1); RC=$?
+  expect_rc "I6 --account 配 stdin → rc=2" 2 "$RC"
+
+  # 文档口径「--text-from - 等价 stdin」必须真的可用（旧解析会把 - 当未知参数）
+  S=$(fresh_state)
+  OUT=$(printf 'fromstdin' | run_in "$P" "$S" -- bash "$SCRIPT_DIR/android/input.sh" --field account --text-from - 2>&1); RC=$?
+  expect_rc "I6 --text-from - 走 stdin → rc=0" 0 "$RC"
+  expect_eq "I6 stdin 值写入框" "fromstdin" "$(acct_text "$S/ui.xml")"
+
+  S=$(fresh_state)
+  OUT=$(printf 'fromstdin' | run_in "$P" "$S" -- bash "$SCRIPT_DIR/android/input.sh" --field account --text-from - --account buyer 2>&1); RC=$?
+  expect_rc "I6 --text-from - 配 --account → rc=2" 2 "$RC"
+
+  S=$(fresh_state)
+  OUT=$(printf 'PASSWORD=stdin-p' | run_in "$P" "$S" -- bash "$SCRIPT_DIR/android/input.sh" --field account --text-from - --key PASSWORD 2>&1); RC=$?
+  expect_rc       "I6 stdin 配 --key → rc=2（不静默忽略键名）" 2 "$RC"
+  expect_contains "I6 提示给文件" "请给文件" "$OUT"
+  S=$(fresh_state)
+  OUT=$(printf 'PASSWORD=stdin-p' | run_in "$P" "$S" -- bash "$SCRIPT_DIR/android/input.sh" --field account --text-stdin --key PASSWORD 2>&1); RC=$?
+  expect_rc "I6 --text-stdin 配 --key → rc=2" 2 "$RC"
+
+  S=$(fresh_state)
+  OUT=$(run_in "$P" "$S" -- bash "$SCRIPT_DIR/android/input.sh" --field account --text-from "$SEC" --account buyer --key PIN 2>&1); RC=$?
+  expect_rc "I6 input.sh 角色不存在 → rc=2" 2 "$RC"
 fi
 
 # ---------- T1 tap_verify ----------

@@ -112,6 +112,8 @@ bash <S>/scripts/assert_page.sh --file docs/test/b.txt --platform android --wait
 - `inputText` 支持中文（走 IME 注入），但**目标控件必须已聚焦** ⇒ 前面必须有 `tapOn`，`hideKeyboard` 放在断言前避免遮挡。
 - 变量 `${ACCOUNT}` / `${PASSWORD}` 由 `flow.sh` 的环境变量注入；**不要把明文密码写进 YAML**，
   从项目根 0600 的 `.debug-login.secret`（`init.sh` 生成）导出，或直接改用 `android/input.sh --text-from`。
+  ⚠️ 多账号文件含 `[acct:<组名>]` 组头行，**不要 `source` 它**（组头会当命令执行报错）；改用
+  `ACCOUNT=$(python3 <S>/scripts/_secret.py get --file .debug-login.secret --account <组名> --key ACCOUNT)` 逐项取。
 - 断言写在最后：`tapOn` / `inputText` **都不返回命中结果**，只有 `assertVisible` / `assert_page.sh` 才是回执。
 
 ## 失败怎么回退

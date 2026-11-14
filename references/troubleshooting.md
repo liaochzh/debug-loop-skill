@@ -55,6 +55,8 @@
 | `input.sh` rc=7 且提示「未获得焦点」 | 点击没把焦点交给目标框（弹层/键盘遮挡/`clickable=false`），脚本**主动停在删除之前** | 先 `settle.sh` + `snapshot.sh --max 20` 复核位置，必要时收起键盘/滚动后重试；**不要**绕过自检硬发键码（会删到别的框） |
 | 反复粘贴（执行器两种输入路径都用上） | 工具选择摇摆：一边 `input text` 一边 `setPasteboard`/`inputText` | **一条任务只选一条输入路径**并写进任务书；失败按上面降级顺序换一次，不要两条路径交替试 |
 | 凭据明文出现在会话/日志里 | 用了 `--text <密码>` | 改 `--text-from .debug-login.secret --key PASSWORD`（0600，`init.sh` 已加入 `.gitignore`，输出恒 `****`） |
+| 登成了别的账号 / 切号后页面还是上一个号 | 多账号时没指名组，或登录后没断言身份；读回校验只证明「值写进了框」 | 取用带 `--account <组名> --key ACCOUNT\|PASSWORD`（`python3 <S>/scripts/_secret.py list --file .debug-login.secret` 查组名，不含值）；登录后 `assert_page.sh has:<账号标识>`；切号先登出并断言旧标识消失，勿靠「再登一次」覆盖会话 |
+| `--account` 报「只能与 --text-from <文件> 同用」 | 写成 `--account a --text x` 或 `--text-from -`（stdin 无组概念），脚本拒掉防「以为切了组、实际没切」 | 改成 `--text-from <凭据文件> --account <组名>`；组/角色不存在也会 rc=2 并列出可用项 |
 
 ## C3. 点击未命中类（点了没反应 / 点到了隔壁）
 

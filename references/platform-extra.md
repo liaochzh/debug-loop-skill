@@ -19,7 +19,8 @@
 `--no-clear`（CLI）或 `{"clear": false}`（步骤）；**追加语义不自动重试**（重试会变成「旧值+文本+文本」）。
 密码框加 `--mask`（只比长度）。平台会转换输入时用 `--expect "<期望读回值>"` 额外断言一次（掩码只比长度）。
 敏感值用
-`--text-from <文件>`（0600）而不是 `--text`，避免密码进会话记录。⚠️ `POST /element/{eid}/clear` 对
+`--text-from <文件>`（group/other 位须为空）而不是 `--text`，避免密码进会话记录；多账号再加
+`--account <组名>`（取文件里 `[acct:<组名>]` 组内的 `--key`，缺省 `ACCOUNT`）。⚠️ `POST /element/{eid}/clear` 对
 Flutter 输入框的可靠性仍是**未验证假设**：不可用时自动回退「按当前长度发退格键」。
 
 ## macOS（<S>/scripts/macos/）
