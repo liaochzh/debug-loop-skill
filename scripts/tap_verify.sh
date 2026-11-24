@@ -90,7 +90,11 @@ fi
 
 # ⚠️ 启发式表：只用于「页面无变化时是否允许再点一次」，**不是唯一防线**（漏判方向才是风险，
 #    误判方向只是少点一次）。确认类弹窗的「确定/确认」也算危险（删除确认最常点它）。
-DANGER_WORDS=" 删除 移除 解绑 注销 退出 支付 付款 提交 下单 购买 卸载 清空 重置 确认 确定 发送 绑定 开通 转账 退款 挂失 delete remove logout unbind pay submit confirm send"
+# 2026-11-17：词表抽到 _danger_words.sh（单一来源，flow_save 复用命令扩展表）。
+#   行为保持：基线表与下方原字面量逐字一致；命令扩展表**不**在本脚本生效。
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/_danger_words.sh"
+DANGER_WORDS="$DANGER_WORDS_BASE"
 
 is_danger() {
   local t lower w
