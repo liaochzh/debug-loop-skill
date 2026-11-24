@@ -5,7 +5,7 @@
 
 ## 背景（改动动因，实测事实）
 
-1. 本机同时在线 `ZY22GT4HNG`（真机，`adb devices` 首台）与 `emulator-5554`（模拟器）。`require_device`
+1. 本机同时在线 `R58M00TEST1`（真机，`adb devices` 首台）与 `emulator-5554`（模拟器）。`require_device`
    取首台，而 skill 全线用 `adb -s $DEVICE` ⇒ adb 自身的 `ANDROID_SERIAL` 约定不生效，整套脚本打到真机。
 2. `--clear-only` 的哨兵探测阶段若语义树为空，`read_back` 的 rc=4 被折成「清空失败 rc=5」，
    把排障引向 IME 掉字。
