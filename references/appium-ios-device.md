@@ -7,15 +7,27 @@
 
 | 命令 | 说明 |
 |---|---|
-| `doctor.sh [--platform macos\|ios-device]` | 环境自检（appium/驱动/Xcode/权限/TeamID） |
+| `doctor.sh [--platform macos\|ios-device]` | 环境自检（appium/驱动/Xcode/权限/TeamID/**4723 就绪**） |
+| `host_server.sh [ensure\|status\|stop] [--project-root <dir>] [--port N] [--timeout S]` | **宿主侧**一键起/查/停 Appium 服务（**不经 safe_run**；ensure 幂等，stop 只杀自己起的 pid）。rc：0 就绪 / 1 失败或超时 / 2 用法错 / 3 未装 CLI |
 | `source.sh --platform macos\|ios-device [--wait N]` | 导出当前页面 page source（排查元素可否寻址）；`--wait` 等 App 首帧 |
 | `tap.sh "<selector>" --platform macos\|ios-device [--using "accessibility id"] [--app-id] [--udid] [--team-id] [--wait N]` | 语义点击 |
-| `assert.sh "<selector>" --platform macos\|ios-device [...] [--not-visible]` | 语义断言（退出码 0=成立，1=失败，3=驱动/会话错误） |
+| `assert.sh "<selector>" --platform macos\|ios-device [...] [--not-visible]` | 语义断言（退出码 0=成立，1=失败，3=驱动/会话错误 **或沙箱内宿主服务未就绪**——后者 stderr 给 host_server.sh 宿主命令，交回主 agent、不要重试） |
 | `flow.sh <steps.json> --platform macos\|ios-device [...]` | 单会话多步（**坐标/长按/退后台都走这个**；步骤类型见下） |
 | `wda_prepare.sh --team-id <T> --profile <描述文件> --wda-bundle-id <id.wda>` | 离线准备真机 WDA（无签名构建→描述文件签名→产出 xctestrun） |
 | `wda_sign.sh <Runner.app> <描述文件> ["身份"]` | 用描述文件逐层 codesign（框架→xctest→App） |
 
-**前置**：`npm install -g appium@3 && appium driver install mac2 && appium driver install xcuitest`；`driver.py` 依赖 `python3 + requests`；脚本会自动拉起 Appium 服务（`:4723`，日志 `build/debug/appium.log`）。
+**前置**：`npm install -g appium@3 && appium driver install mac2 && appium driver install xcuitest`；`driver.py` 依赖 `python3 + requests`。
+
+**Appium 服务（`:4723`）谁来起 —— 沙箱内不自动起**：
+- **宿主直跑**脚本时，`_common.sh` 的 `ensure_appium_server()` 会自动拉起（日志 `build/debug/appium.log`）。
+- **经 `safe_run.sh` 沙箱**时**不会启动**：Seatbelt profile 由子进程**继承且终身不可脱**，沙箱内起的 appium
+  即使 `/status` 报 ready，后续 spawn `xcodebuild` / `devicectl` / 访问 mach services 做 WDA 时全被拒
+  ⇒ **残废服务**（比直接失败更坏：调用方误以为就绪，然后在创建会话处空等/误判）。
+  沙箱只放行「**连**」`localhost:4723`，不放行起服务所需能力。
+- 因此 **iOS 真机 / macOS mac2 每轮验证前，由主 agent 在宿主执行**：
+  `bash <S>/scripts/appium/host_server.sh ensure --project-root <项目根>`
+  子代理侧 `ensure_appium_server()` 只**复用**宿主服务；未就绪则 **rc=3 快失败**并打印上述指引（不空等）。
+  `appium/doctor.sh` 会直接报「❌ 未运行 + 沙箱内不自动启动 + 宿主命令」，一次自检即可判断要不要交回主 agent。
 
 **iOS 真机前置（xcuitest）**：
 - `IOS_TEAM_ID`（Development Team）必填；`IOS_WDA_BUNDLE_ID` 填本团队名下的 App ID（如 `<AppBundleId>.wda`）；
@@ -23,7 +35,7 @@
 - **路线 B（离线，推荐在凭据不可用时）**：
   1. `wda_prepare.sh --team-id <T> --profile ~/Library/MobileDevice/Provisioning\ Profiles/<uuid>.mobileprovision --wda-bundle-id <AppBundleId>.wda`（无签名构建 + 描述文件手签，通配 profile 即可覆盖 runner 的 `.xctrunner`）；
   2. `export IOS_XCTESTRUN=<产出>/Build/Products/WebDriverAgentRunner_iphoneos<SDK>-arm64.xctestrun` + `export IOS_WDA_BUNDLE_ID=<AppBundleId>.wda`；
-     **可省略**：`wda_prepare.sh` 默认产物目录 `build/debug/wda-prebuilt/Build/Products/` 下若有 `<udid>_<系统版本>.xctestrun`，`_common.sh` 会自动发现并走 xctestrun 路线（免得把含设备 UDID 的绝对路径写进随项目提交的 `.debug.env`）；`IOS_XCTESTRUN` 也可给**相对项目根**的路径，脚本内部绝对化后再下发给 appium；
+     **可省略**：`wda_prepare.sh` 默认产物目录 `debug-info/wda-prebuilt/Build/Products/`（持久目录，构建脚本 `rm -rf build` 不会清；兼容旧位置 `build/debug/wda-prebuilt/Build/Products/`）下若有 `<udid>_<系统版本>.xctestrun`，`_common.sh` 会自动发现并走 xctestrun 路线（免得把含设备 UDID 的绝对路径写进随项目提交的 `.debug.env`）；`IOS_XCTESTRUN` 也可给**相对项目根**的路径，脚本内部绝对化后再下发给 appium；
   3. 之后 `source.sh` / `tap.sh` / `flow.sh` 走 `xcodebuild test-without-building`（XCTest 托管 WDA，能正确切后台），不再需要 Xcode 账号；
      该路线下**不下发** `appium:updatedWDABundleId`（WDA 的 bundle id 由 xctestrun 的 `TestHostBundleIdentifier` 决定，与 `.debug.env` 的 `IOS_WDA_BUNDLE_ID` 未必同名）；
   4. 约束：xctestrun 必须与 `Build/Products/Debug-iphoneos/` 同级（appium 按 `__TESTROOT__` 相对解析），脚本会自动补 appium 认的固定文件名；
