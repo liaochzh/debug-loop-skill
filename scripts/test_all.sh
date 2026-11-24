@@ -2,7 +2,7 @@
 # test_all.sh — 脚本层回归统一入口（离线，不需真机/模拟器）
 #
 # 用法:
-#   bash <S>/scripts/test_all.sh           # 默认：common + bg 静态 + snapshot + safe_run + build_metrics + ios_common + interact
+#   bash <S>/scripts/test_all.sh           # 默认：common + bg 静态 + snapshot + safe_run + build_metrics + ios_common + interact + appium_host + flow
 #   bash <S>/scripts/test_all.sh --full    # 额外跑 bg.sh 全量（215 项，较慢）
 #   bash <S>/scripts/test_all.sh -v        # 显示各子脚本完整输出
 #
@@ -68,6 +68,12 @@ run_one "test_ios_common.sh" "$SCRIPT_DIR/test_ios_common.sh"
 # 2026-11-12：输入/点击回执/坑表（input.sh / tap_verify.sh / pitfall_append.sh）——
 #   adb 桩模拟设备（会真的改写 ui.xml），不碰真机；逐 rc 钉死契约
 run_one "test_interact.sh" "$SCRIPT_DIR/test_interact.sh"
+# 2026-11-16：宿主 Appium 服务一键管理 + 沙箱内快失败（host_server.sh / ensure_appium_server）——
+#   假 /status 服务 + PATH 剥离 appium，不碰真机；钉死幂等复用、不误杀他人服务、rc 契约
+run_one "test_appium_host.sh" "$SCRIPT_DIR/test_appium_host.sh"
+# 2026-11-17：流程固化/回放 + 取证（flow_save / flow_run / evidence / _flow_index / 两层危险词表）——
+#   adb/xcrun 桩 + FLOW_STEP_DIR 步骤桩，不碰真机；钉死分级五维、B 级 rc=6 零动作、续跑、设备注入
+run_one "test_flow.sh" "$SCRIPT_DIR/test_flow.sh"
 
 if [ "$FULL" = 1 ]; then
   run_one "test_bg.sh 全量" "$SCRIPT_DIR/test_bg.sh"
