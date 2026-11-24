@@ -1,0 +1,358 @@
+{
+  "version": "3.0",
+  "rules": {},
+  "identity": {
+    "role": "",
+    "traits": [],
+    "version": 1,
+    "history": [],
+    "updatedAt": ""
+  },
+  "patterns": {},
+  "logs": [],
+  "errors": {},
+  "insights": {},
+  "lessons": {
+    "L-1793762608049-ha30": {
+      "trigger": "要验证 command -v flutter 的软链解析失败是否可观测",
+      "action": "别用断链/成环构造：command -v 会直接跳过它们；改用 13 跳超长链（终点可执行但超上限）才能真进入解析器",
+      "domain": "general",
+      "confidence": 0.7,
+      "status": "active",
+      "scope": "project",
+      "evidence": [],
+      "helpful": 0,
+      "harmful": 0,
+      "created_at": "2026-11-04T03:23:28.054Z",
+      "updated_at": "2026-11-04T03:23:28.054Z",
+      "last_used": null
+    },
+    "L-1793762608049-x3t9": {
+      "trigger": "沙箱内 xcrun devicectl device install 报读不到 .app/Info.plist",
+      "action": "根因是 sandbox_extension_issue_file 被拒（file-issue-extension 权限面）；把 bundle 暂存到 $TMPDIR 同样失败，契约是 rc=3 交宿主机执行",
+      "domain": "general",
+      "confidence": 0.8,
+      "status": "active",
+      "scope": "project",
+      "evidence": [],
+      "helpful": 0,
+      "harmful": 0,
+      "created_at": "2026-11-04T03:23:28.054Z",
+      "updated_at": "2026-11-04T03:23:28.054Z",
+      "last_used": null
+    },
+    "L-1793762608049-mj5i": {
+      "trigger": "脚本用 trap EXIT 做回滚/收尾",
+      "action": "先 rc=$? 保存再 exit \"$rc\"，否则断言失败会被吞成成功；INT/TERM 用 exit 130/143 汇入 EXIT trap",
+      "domain": "general",
+      "confidence": 0.7,
+      "status": "active",
+      "scope": "project",
+      "evidence": [],
+      "helpful": 0,
+      "harmful": 0,
+      "created_at": "2026-11-04T03:23:28.054Z",
+      "updated_at": "2026-11-04T03:23:28.054Z",
+      "last_used": null
+    },
+    "L-1793762608049-vj32": {
+      "trigger": "要记录「改动前」sha 作为基线",
+      "action": "必须在启动任何会改该文件的任务之前同步测量；后台任务已启动后再测，测到的是已改动状态（本轮曾把注入后 sha 误当基线）",
+      "domain": "general",
+      "confidence": 0.75,
+      "status": "active",
+      "scope": "project",
+      "evidence": [],
+      "helpful": 0,
+      "harmful": 0,
+      "created_at": "2026-11-04T03:23:28.054Z",
+      "updated_at": "2026-11-04T03:23:28.054Z",
+      "last_used": null
+    },
+    "L-1793767556532-d8vm": {
+      "trigger": "注释或文档写着「未实测」「不支持」",
+      "action": "当作待验证假设而非结论：本轮 build_metrics 注释写 release 未实测，实际两轮 release 构建均通过（开发签名即可），只需修正注释与文档",
+      "domain": "general",
+      "confidence": 0.65,
+      "status": "active",
+      "scope": "project",
+      "evidence": [],
+      "helpful": 0,
+      "harmful": 0,
+      "created_at": "2026-11-04T04:45:56.536Z",
+      "updated_at": "2026-11-04T04:45:56.536Z",
+      "last_used": null
+    },
+    "L-1793767556532-6yuo": {
+      "trigger": "同一产物目录被多种构建模式依次写过（profile/release）",
+      "action": "build/ios 下最终停留的是最后一次模式：重新调试前必须重编，别假设它还是之前的 debug/profile 包",
+      "domain": "general",
+      "confidence": 0.6,
+      "status": "active",
+      "scope": "project",
+      "evidence": [],
+      "helpful": 0,
+      "harmful": 0,
+      "created_at": "2026-11-04T04:45:56.536Z",
+      "updated_at": "2026-11-04T04:45:56.536Z",
+      "last_used": null
+    },
+    "L-1794967201771-oko0": {
+      "trigger": "给流程/命令串做注入面校验时",
+      "action": "先按真实执行路径（bash -c）列控制符：单 & 与 $ 必须与 && 同级拒收，执行侧同时加 set -f",
+      "domain": "security",
+      "confidence": 0.8,
+      "status": "active",
+      "scope": "project",
+      "evidence": [],
+      "helpful": 0,
+      "harmful": 0,
+      "created_at": "2026-11-18T02:00:01.777Z",
+      "updated_at": "2026-11-18T02:00:01.777Z",
+      "last_used": null
+    },
+    "L-1794967201771-a43w": {
+      "trigger": "回放/编排脚本要执行同级脚本时",
+      "action": "scripts 目录多数无 +x，必须显式前置解释器（bash / .py 用 python3），否则 rc=126",
+      "domain": "workflow",
+      "confidence": 0.85,
+      "status": "active",
+      "scope": "project",
+      "evidence": [],
+      "helpful": 0,
+      "harmful": 0,
+      "created_at": "2026-11-18T02:00:01.777Z",
+      "updated_at": "2026-11-18T02:00:01.777Z",
+      "last_used": null
+    },
+    "L-1794967201771-ce3m": {
+      "trigger": "落盘目录用秒级时间戳命名时",
+      "action": "用 mkdir 返回码抢目录并对失败递增 -N 后缀，不要 check-then-mkdir（同秒并发互踩/dir 竞态）",
+      "domain": "concurrency",
+      "confidence": 0.8,
+      "status": "active",
+      "scope": "project",
+      "evidence": [],
+      "helpful": 0,
+      "harmful": 0,
+      "created_at": "2026-11-18T02:00:01.777Z",
+      "updated_at": "2026-11-18T02:00:01.777Z",
+      "last_used": null
+    },
+    "L-1794967201771-h0rl": {
+      "trigger": "测试要断言最近一次产物路径时",
+      "action": "从脚本输出解析路径，禁用 ls -t（同秒并列排序不定，会在并行/快速连跑时假失败）",
+      "domain": "testing",
+      "confidence": 0.8,
+      "status": "active",
+      "scope": "project",
+      "evidence": [],
+      "helpful": 0,
+      "harmful": 0,
+      "created_at": "2026-11-18T02:00:01.777Z",
+      "updated_at": "2026-11-18T02:00:01.777Z",
+      "last_used": null
+    },
+    "L-1794967201771-67mc": {
+      "trigger": "以 key=value 逐行解析元数据时",
+      "action": "所有值输出前强制单行化，且写入侧拒收换行；否则多行值可伪造额外键（如 precond 里藏 grade=A 绕过门禁）",
+      "domain": "security",
+      "confidence": 0.85,
+      "status": "active",
+      "scope": "project",
+      "evidence": [],
+      "helpful": 0,
+      "harmful": 0,
+      "created_at": "2026-11-18T02:00:01.777Z",
+      "updated_at": "2026-11-18T02:00:01.777Z",
+      "last_used": null
+    },
+    "L-1794967201771-wy40": {
+      "trigger": "校验 .app 产物并计算 Info.plist sha256 时",
+      "action": "iOS bundle 在根、macOS bundle 在 Contents/Info.plist，两级都要查，否则 macOS 恒报无 Info.plist",
+      "domain": "workflow",
+      "confidence": 0.85,
+      "status": "active",
+      "scope": "project",
+      "evidence": [],
+      "helpful": 0,
+      "harmful": 0,
+      "created_at": "2026-11-18T02:00:01.777Z",
+      "updated_at": "2026-11-18T02:00:01.777Z",
+      "last_used": null
+    }
+  },
+  "events": [
+    {
+      "timestamp": "2026-11-04T03:23:28.054Z",
+      "op": "lesson-add",
+      "target": "L-1793762608049-ha30",
+      "summary": "要验证 command -v flutter 的软链解析失败是否可观测 -> 别用断链/成环构造：command -v 会直接跳过它们；改用 13 跳超长链（终点可执行但超上限）才能真进入解析器"
+    },
+    {
+      "timestamp": "2026-11-04T03:23:28.054Z",
+      "op": "lesson-add",
+      "target": "L-1793762608049-x3t9",
+      "summary": "沙箱内 xcrun devicectl device install 报读不到 .app/Info.plist -> 根因是 sandbox_extension_issue_file 被拒（file-issue-extension 权限面）；把 bundle 暂存到 $TMPDIR 同样失败，契约是 rc=3 交宿主机执行"
+    },
+    {
+      "timestamp": "2026-11-04T03:23:28.054Z",
+      "op": "lesson-add",
+      "target": "L-1793762608049-mj5i",
+      "summary": "脚本用 trap EXIT 做回滚/收尾 -> 先 rc=$? 保存再 exit \"$rc\"，否则断言失败会被吞成成功；INT/TERM 用 exit 130/143 汇入 EXIT trap"
+    },
+    {
+      "timestamp": "2026-11-04T03:23:28.054Z",
+      "op": "lesson-add",
+      "target": "L-1793762608049-vj32",
+      "summary": "要记录「改动前」sha 作为基线 -> 必须在启动任何会改该文件的任务之前同步测量；后台任务已启动后再测，测到的是已改动状态（本轮曾把注入后 sha 误当基线）"
+    },
+    {
+      "timestamp": "2026-11-04T03:23:28.054Z",
+      "op": "wrap-up",
+      "target": "REV-1793762608049-uf6h",
+      "summary": "debug-loop 沙箱遗留项修复（A/B/C/D）"
+    },
+    {
+      "timestamp": "2026-11-04T04:45:56.537Z",
+      "op": "lesson-add",
+      "target": "L-1793767556532-d8vm",
+      "summary": "注释或文档写着「未实测」「不支持」 -> 当作待验证假设而非结论：本轮 build_metrics 注释写 release 未实测，实际两轮 release 构建均通过（开发签名即可），只需修正注释与文档"
+    },
+    {
+      "timestamp": "2026-11-04T04:45:56.537Z",
+      "op": "lesson-add",
+      "target": "L-1793767556532-6yuo",
+      "summary": "同一产物目录被多种构建模式依次写过（profile/release） -> build/ios 下最终停留的是最后一次模式：重新调试前必须重编，别假设它还是之前的 debug/profile 包"
+    },
+    {
+      "timestamp": "2026-11-04T04:45:56.537Z",
+      "op": "wrap-up",
+      "target": "REV-1793767556532-h912",
+      "summary": "debug-loop 会话收尾（release 实测 + 测试补全 + 发布）"
+    },
+    {
+      "timestamp": "2026-11-18T02:00:01.779Z",
+      "op": "lesson-add",
+      "target": "L-1794967201771-oko0",
+      "summary": "给流程/命令串做注入面校验时 -> 先按真实执行路径（bash -c）列控制符：单 & 与 $ 必须与 && 同级拒收，执行侧同时加 set -f"
+    },
+    {
+      "timestamp": "2026-11-18T02:00:01.779Z",
+      "op": "lesson-add",
+      "target": "L-1794967201771-a43w",
+      "summary": "回放/编排脚本要执行同级脚本时 -> scripts 目录多数无 +x，必须显式前置解释器（bash / .py 用 python3），否则 rc=126"
+    },
+    {
+      "timestamp": "2026-11-18T02:00:01.779Z",
+      "op": "lesson-add",
+      "target": "L-1794967201771-ce3m",
+      "summary": "落盘目录用秒级时间戳命名时 -> 用 mkdir 返回码抢目录并对失败递增 -N 后缀，不要 check-then-mkdir（同秒并发互踩/dir 竞态）"
+    },
+    {
+      "timestamp": "2026-11-18T02:00:01.779Z",
+      "op": "lesson-add",
+      "target": "L-1794967201771-h0rl",
+      "summary": "测试要断言最近一次产物路径时 -> 从脚本输出解析路径，禁用 ls -t（同秒并列排序不定，会在并行/快速连跑时假失败）"
+    },
+    {
+      "timestamp": "2026-11-18T02:00:01.779Z",
+      "op": "lesson-add",
+      "target": "L-1794967201771-67mc",
+      "summary": "以 key=value 逐行解析元数据时 -> 所有值输出前强制单行化，且写入侧拒收换行；否则多行值可伪造额外键（如 precond 里藏 grade=A 绕过门禁）"
+    },
+    {
+      "timestamp": "2026-11-18T02:00:01.779Z",
+      "op": "lesson-add",
+      "target": "L-1794967201771-wy40",
+      "summary": "校验 .app 产物并计算 Info.plist sha256 时 -> iOS bundle 在根、macOS bundle 在 Contents/Info.plist，两级都要查，否则 macOS 恒报无 Info.plist"
+    },
+    {
+      "timestamp": "2026-11-18T02:00:01.779Z",
+      "op": "wrap-up",
+      "target": "REV-1794967201771-jm57",
+      "summary": "autoDebug 流程固化+分级回放+一键取证（debug-loop skill）"
+    }
+  ],
+  "assessments": {
+    "updated_at": ""
+  },
+  "reviews": [
+    {
+      "id": "REV-1793762608049-uf6h",
+      "task": "debug-loop 沙箱遗留项修复（A/B/C/D）",
+      "completion": 95,
+      "highlights": [
+        "A 软链 SDK 推导 + N13 分组（43 项）；B run.sh 顺序与 rc 契约（实测 sandbox_extension_issue_file 为根因，暂存 TMPDIR 无效）；C build_metrics.sh + 27 项 stub 回归；D runbook；真机构建双轮验证归零；审查通过并提交 c2cf081"
+      ],
+      "improvements": [
+        "release 模式未实测；宿主机 run.sh 成功路径未验证（会截断 app_device.log）；仓库还有 10 个早前会话的未提交改动"
+      ],
+      "learnings": [],
+      "error_ids": [],
+      "insight_ids": [],
+      "created_at": "2026-11-04T03:23:28.049Z"
+    },
+    {
+      "id": "REV-1793767556532-h912",
+      "task": "debug-loop 会话收尾（release 实测 + 测试补全 + 发布）",
+      "completion": 98,
+      "highlights": [
+        "release 模式真机双轮验证并独立核验（sha 逐字节还原 / 审计三行 / 无 pending）；新增 test_ios_common.sh 12 项并接入 test_all（六项）；run.sh --device 宿主机 rc=0；两轮 review LGTM + 5 条 P2 全修；5 个提交全部推送（283fd40）"
+      ],
+      "improvements": [
+        "ipc 子模块里的项目侧 wrapper 注释改动未提交（留用户决定）；devicectl 表格兜底版式未核实；宿主 hierarchy P99 未测"
+      ],
+      "learnings": [],
+      "error_ids": [],
+      "insight_ids": [],
+      "created_at": "2026-11-04T04:45:56.532Z"
+    },
+    {
+      "id": "REV-1794967201771-jm57",
+      "task": "autoDebug 流程固化+分级回放+一键取证（debug-loop skill）",
+      "completion": 95,
+      "highlights": [
+        "9 个提交全部落地：flow_save/flow_run/evidence/_danger_words/_flow_index/test_flow + 4 模板；测试 146 项；Android 真机/模拟器双设备、iOS 模拟器含 rc=3 降级、macOS run+logs、131MB 真 APK 全实测；两轮代码审查 r1 不通过→修复→r2 LGTM；顺手修复 macOS .app Info.plist 校验缺陷并脱敏文档中的真实序列号"
+      ],
+      "improvements": [
+        "未跑真实 Flutter 构建产物（需工程+gradle）；未执行 publish（权限层 deny，需人工 publish.sh）；iOS 真机 WDA 链路本会话未复验"
+      ],
+      "learnings": [],
+      "error_ids": [],
+      "insight_ids": [],
+      "created_at": "2026-11-18T02:00:01.771Z"
+    }
+  ],
+  "config": {
+    "thresholds": {
+      "repeatCount": 5,
+      "repeatWindowMinutes": 10,
+      "driftMatchScore": 0.3
+    },
+    "limits": {
+      "maxLogs": 1000,
+      "maxErrors": 500,
+      "maxInsights": 500,
+      "maxReviews": 200,
+      "maxLessons": 500,
+      "maxEvents": 1000
+    },
+    "recall": {
+      "defaultLimit": 8,
+      "minConfidence": 0.5,
+      "rulesLimit": 5
+    },
+    "lifecycle": {
+      "activateConfidence": 0.6,
+      "retireConfidence": 0.2,
+      "maxConfidence": 0.95,
+      "halfLifeDays": 30,
+      "maxEvidence": 20,
+      "globalMinConfidence": 0.8
+    },
+    "privacy": {
+      "redactLogs": true
+    }
+  }
+}
