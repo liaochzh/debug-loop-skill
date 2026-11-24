@@ -143,6 +143,8 @@ parse_debug_env() {
       IOS_DEVICE_APP)     IOS_DEVICE_APP="$val" ;;
       IOS_APP_NAME)       IOS_APP_NAME="$val" ;;       # App 进程名（syslog 行过滤；缺省从产物 CFBundleExecutable 推导）
       IOS_WDA_BUNDLE_ID)  IOS_WDA_BUNDLE_ID="$val" ;;  # 真机 WDA runner bundle id（须本团队可签名，如 <AppId>.wda）
+      IOS_XCTESTRUN)      IOS_XCTESTRUN="$val" ;;      # 预构建 WDA 的 xctestrun（绝对或相对项目根；缺省自动发现）
+      IOS_PREBUILT_WDA)   IOS_PREBUILT_WDA="$val" ;;   # 预构建 WDA .app（仅备选：Xcode 27 栈下前台启动会退出）
       IOS_ATTACH_ONLY)    IOS_ATTACH_ONLY="$val" ;;     # 1=Appium 只 attach 已运行 App（禁 forceAppLaunch/noReset 重启）
       MACOS_APP_NAME)     MACOS_APP_NAME="$val" ;;
       MACOS_APP_BUNDLE)   MACOS_APP_BUNDLE="$val" ;;
@@ -219,6 +221,8 @@ validate_debug_env() {
   if [ -n "${IOS_DEVICE_APP:-}" ]; then   _env_check_path IOS_DEVICE_APP   "$IOS_DEVICE_APP";   fi
   if [ -n "${IOS_APP_NAME:-}" ]; then     _env_check_path IOS_APP_NAME     "$IOS_APP_NAME";     fi  # 可执行名可含空格，走路径档
   if [ -n "${IOS_WDA_BUNDLE_ID:-}" ]; then _env_check_identifier IOS_WDA_BUNDLE_ID "$IOS_WDA_BUNDLE_ID"; fi
+  if [ -n "${IOS_XCTESTRUN:-}" ]; then    _env_check_path IOS_XCTESTRUN    "$IOS_XCTESTRUN";    fi
+  if [ -n "${IOS_PREBUILT_WDA:-}" ]; then _env_check_path IOS_PREBUILT_WDA "$IOS_PREBUILT_WDA"; fi
   if [ -n "${IOS_ATTACH_ONLY:-}" ]; then
     case "$IOS_ATTACH_ONLY" in
       0|1) ;;
