@@ -33,7 +33,15 @@ echo "--- Xcode ---"
 xcodebuild -version 2>/dev/null | head -1 || echo "❌ 未检测到 Xcode"
 
 echo "--- Appium 服务 ---"
-if appium_online; then echo "✅ 已在线 ($APPIUM_SERVER)"; else echo "ℹ️  未运行（脚本会自动启动）"; fi
+if appium_online; then
+  echo "✅ 已在线 ($APPIUM_SERVER)"
+elif in_sandbox; then
+  echo "❌ 未运行，且当前在 safe_run 沙箱内 ⇒ 沙箱内不会自动启动（会起成残废服务）"
+  echo "   需主 agent 在宿主执行（不经 safe_run）："
+  echo "   bash ${SCRIPT_DIR}/host_server.sh ensure --project-root ${PWD} --port ${APPIUM_PORT}"
+else
+  echo "ℹ️  未运行（宿主直跑时脚本会自动启动；也可用 host_server.sh ensure 一键起）"
+fi
 
 case "$PLATFORM" in
   macos)
