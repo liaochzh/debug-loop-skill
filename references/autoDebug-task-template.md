@@ -72,6 +72,41 @@ autoDebug 早期存在「提前返回」：只执行 2~3 步就返回、或因�
           （截图默认只报路径、不 Read；确需 Read 须写明理由）；拿不到证据就写「未验证」，不得写「已修复」
 ```
 
+## 回放任务书（命中流程库时用）
+
+项目已有固化流程时，**不要再写步骤清单**：直接派回放，让子代理一条命令跑完整个序列。
+流程库位置 `docs/test/debug-loop/flows/index.md`（`flow_save.sh` 维护，A 级可免确认直跑，B 级需用户同意）。
+
+```
+任务目标：回放固化流程 <流程名>（<平台>），并回报每一步的 rc 与证据
+
+授权声明：<二选一，必须显式写一句>
+  - 「本流程为 A 级，已核对 index.md 分级为 A，允许直接回放。」
+  - 「本流程为 B 级，**用户已明确同意本次回放**（同意原文：<引用>），授权使用 --allow-confirm。」
+
+操作步骤：
+0. 先跑 `bash <S>/scripts/doctor.sh --platform <目标平台>`：rc≠0 ⇒ 登记阻塞项回报（不自行安装依赖）
+1. `bash <S>/scripts/flow_run.sh --name <流程名> [--allow-confirm]`
+   （超过 60s 用 `bg.sh start scripts/flow_run.sh --name <流程名> …` 后台跑，再短轮询 `bg.sh wait`）
+2. 若第 1 步 rc=0：读 `build/debug/flows/<流程名>-<ts>/journal.jsonl` 与各 `stepN.log`，逐条回报
+3. 若 rc=1（某步失败）：**禁止整流程重跑**。按 journal 定位失败步，用 `--from-step N` 续跑，
+   或回退到逐步探索（按本文件「模板」写下一步）；成功后续跑或更新流程
+
+完成标准：`flow_run.sh` rc=0，且 journal 每步 rc=0；观察型流程（无断言步骤）只能声称「已执行」
+
+回报要求：
+- 逐步骤表：`第 N 步 | 命令 | rc | 耗时`（取自 journal.jsonl）+ 每条结论后的证据坐标 `证据: build/debug/…`
+- `flow_run.sh` **rc=6 ⇒ 登记「需授权」直接回报**（附流程名与 B 级原因），
+  **不得**自行加 `--allow-confirm`、不得改用逐步探索绕门禁、不得换形态反复试探
+- 回放失败 ⇒ 附失败步日志末 15 行与 `fail-snapshot.txt` 摘要；写明建议的 `--from-step N`
+- 不得仅用截图作证据（截图只报路径、不 Read）
+```
+
+**硬条款（不可越过）**：**未获用户明确同意，不得授予 `--allow-confirm`**。
+`index.md` 标 B 级 = 该流程含坐标点击 / 危险词 / 放宽 profile / 降级平台 / 无断言之一；
+同意只能来自用户本人（build 派发前须先 `question` 用户），子代理不得自行判定「这次应该没事」。
+缺授权时正确的动作是**登记 rc=6 并回报**，不是绕过门禁。
+
 ## 命令形态（最容易一次性废掉整轮任务的地方）
 
 autoDebug 的 shell 权限是**按命令串前缀匹配**的：`shell *` = deny，只放行
@@ -101,8 +136,14 @@ autoDebug 的 shell 权限是**按命令串前缀匹配**的：`shell *` = deny�
 ## 派发前自检清单
 
 - [ ] **命令形态**是否全部按 §命令形态 写（每条以 `bash <S>/scripts/safe_run.sh …` 开头、绝对路径字面量、无 `cd`/`&&`/重定向/行首 `VAR=`；`workdir` = `--project-root`）？写错一条即整轮 UNVERIFIED
+- [ ] **是否先查过流程库**（`docs/test/debug-loop/flows/index.md`）？A 级命中就别写步骤清单（改派回放）；B 级命中必须先 `question` 用户同意，任务书里带授权声明；未命中才走逐步探索
+- [ ] 回放单是否写了「rc=6 ⇒ 登记需授权回报，不得自行 `--allow-confirm`」？是否写明「回放失败禁整流程重跑，用 `--from-step` 或回退探索」？
 - [ ] `.debug.env` 是否已就绪（主 agent/人工在项目根准备好）？autoDebug 档**没有写权限**、**不能自举** ⇒ 缺失时它会直接登记阻塞返回
 - [ ] 是否要求先跑 `doctor.sh`（一次自检代替逐项探测），且写明「缺依赖只回报、不自行安装」
+- [ ] **iOS 真机 / macOS mac2 单**：主 agent 是否**已在宿主**起好 Appium 服务？
+      `bash <S>/scripts/appium/host_server.sh ensure --project-root <项目根绝对路径>`（**不经 safe_run**，幂等可重复跑）。
+      沙箱内**起不了**服务（Seatbelt profile 子进程继承且终身不可脱 ⇒ 残废服务），子代理只复用；
+      未就绪时 `ensure_appium_server` 返回 **rc=3** 并打印宿主命令 ⇒ 任务书里要写明「rc=3 即登记阻塞交回主 agent，不要重试、不要试图在沙箱内起服务」
 - [ ] 若目标工程**不是 Flutter**（无 `pubspec.yaml`）：任务里是否已写明「**跳过 Maestro / Appium**（这两处仍有 Flutter 门），直接用 `android/ui.sh` · `tap.sh`」「**不跑 `build.sh`**（构建交回主 agent）」
 - [ ] 完成标准是否已写成断言（优先）或至少可机器判定；是否写明「不得仅用截图作证据」
 - [ ] **是否写明起始页面状态**（登录页 / 已登录 / 首启协议页）以及**是否允许清数据**？未写清时子代理会自行 `adb shell pm clear`，复现前提漂移
