@@ -1,0 +1,22 @@
+{
+ "version": 1,
+ "template": true,
+ "name": "collect",
+ "platform": "android",
+ "profile": "ui",
+ "device": "",
+ "precond": "App 已在前台（任一页）；需当前页快照/日志证据",
+ "note": "通用取证模板（仅 Android 入流程库）：一条 evidence.sh 产出 build/debug/evidence/<ts>/（settle/snapshot/logs/meta）。观察型无断言 ⇒ B 级，回放需用户同意。iOS/ios-device/macOS 取证不进流程库，直接一条 evidence.sh --platform <P> 命令。",
+ "grade": "B",
+ "observe_only": true,
+ "steps": [
+  "evidence.sh --lines 200"
+ ],
+ "created_at": 0,
+ "updated_at": 0,
+ "last_success_at": null,
+ "success": 0,
+ "failure": 0,
+ "consecutive_failures": 0,
+ "status": "active"
+}
