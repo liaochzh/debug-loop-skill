@@ -7,6 +7,9 @@
 #
 # selector 默认按 accessibility id 查找（Flutter Semantics.identifier → accessibilityIdentifier）
 # 其它 using: id / xpath / class name / -ios predicate string / -ios class chain
+#
+# 退出码 3 的含义（2026-11-16 起）：驱动/会话错误，**或沙箱内宿主 Appium 服务未就绪**
+#   （后一种情形 stderr 给出 host_server.sh 宿主命令 ⇒ 交回主 agent 起服务，**不要重试**）
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
