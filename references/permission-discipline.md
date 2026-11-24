@@ -24,7 +24,7 @@
     iOS 真机链路已放行 **usbmuxd 本机 unix socket**（`libimobiledevice`：`idevice_id`/`ideviceinfo`/`idevicesyslog`；
     `xctrace list devices` 在沙箱内不可用，设备枚举自动回退 `devicectl` / `idevice_id`）；
     默认禁网（仅放行 adb `5037` / appium `4723` 的**本机**端口；另允许 `bind` 本机任意端口，仅 adb 起 daemon 需要）。
-  - `--project-root` 缺省取 `$PWD`；**只接受白名单根**（`~/Projects`、`/Volumes`、`/private/tmp`、`$TMPDIR`），
+  - `--project-root` 缺省取 `$PWD`；**只接受白名单根**（`~/projects`、`/Volumes`、`/private/tmp`、`$TMPDIR`），
     且拒绝 `$HOME` / `/` 本体。缺省且 `$PWD` 不在白名单时**写面自动收窄到 `$TMPDIR`**（stderr 会提示）；
     要写项目内产物必须显式传项目根。需要新根改 `safe_run.sh` 的 `ALLOW_ROOTS`。
   - **退出码**：`2` = 用法错；**`117` = 沙箱不可用**（fail-closed，命令根本没跑）。
@@ -32,8 +32,11 @@
     ⚠️ 其余退出码是**命令自己的**、原样透传：例如 `snapshot.sh` 的 `rc=4` = 语义树为空（正常观测，见「页面观测阶梯」），
     **不要**把 `4` 当成沙箱故障。
   - 裸 `bash <S>/scripts/<x>.sh`（不经 `safe_run.sh`）在白名单外 ⇒ 秒拒；这是**结构护栏**，不是缺权限。
-  - **`<S>` 必须写成绝对路径**（`/Users/<你>/.config/opencode/skills/debug-loop` 或 `.../Projects/debug-loop-skill` 两种都在白名单）；
+  - **`<S>` 必须写成绝对路径**（`/Users/<你>/.config/opencode/skills/debug-loop` 或 `.../projects/debug-loop-skill` 两种都在白名单）；
     写成 `~/.config/...`、`$HOME/...` 或相对路径**不匹配**白名单 ⇒ 秒拒。这是踩过的坑，不是权限问题。
+    ⚠️ **realpath 形态必须写磁盘真名小写 `projects`**：匹配器 `re.fullmatch` **大小写敏感**，而 macOS FS 不敏感
+    ⇒ 大写 `Projects` 路径**能执行却判权不过**（2026-11-16 事故：autoDebug 一次会话 16 拒中 13 拒纯属此因）。
+    入口被拒时先逐字核对大小写，**只纠正一次**，仍被拒才登记结构性故障。
   - 沙箱内 `pgrep` / `ps` 不可用，`kill` 只能作用于**本沙箱内**进程：日志采集的存活判断已改用 pid 文件（见 `ios/logs.sh`）。
 - **`Operation not permitted` 的读法**（沙箱拒绝）：
   - 写 `~/.ssh`、写项目外路径、连外网 ⇒ **边界正常**：换落点（`build/debug/`、`$TMPDIR`）或改用 skill 脚本，**不算权限被拒中止**。
@@ -41,6 +44,13 @@
   - 报 `sandbox-exec: sandbox_apply: Operation not permitted` ⇒ **嵌套沙箱被系统拒绝**（典型于 `flutter build ios`）：
     换 profile/加权限都无效，按下条交回主 agent，**不要**反复重试。
   - 只有「沙箱入口本身起不来（rc=117）」或「设备侧权限（USB 调试授权、屏幕录制、辅助功能）」才算中止条件 4。
+- **Appium 服务（`:4723`）必须由主 agent 在宿主起**（已知限制，非缺权限）：沙箱只放行「**连**」`localhost:4723`；
+  Seatbelt profile 由子进程**继承且终身不可脱**，故沙箱内 `nohup appium &` 起的服务即使 `/status` 报 ready，
+  后续 spawn `xcodebuild` / `devicectl` / 访问 mach services 做 WDA 时全被拒 ⇒ **残废服务**（比失败更坏：会空等误判）。
+  - 主 agent（宿主，**不经 safe_run**）：`bash <S>/scripts/appium/host_server.sh ensure --project-root <项目根>`
+    （幂等；`status` 查、`stop` 只杀自己起的 pid；日志 `build/debug/appium-host.log`，与沙箱内 `appium.log` 分开）
+  - 子代理：`ensure_appium_server()` 只**复用**宿主服务，未就绪即 **rc=3 快失败**并打印上述宿主命令
+    ⇒ 登记阻塞交回主 agent，**不要重试、不要试图在沙箱内起服务**。`appium/doctor.sh` 会直接报该项。
 - **沙箱内**不能**跑 `flutter build ios`**（含 `--profile build`）：xcodebuild 解析 SwiftPM 依赖时会**再套一层
   `sandbox-exec`**，macOS 不允许嵌套沙箱 ⇒ 必失败（实测命令形态：
   `bash <S>/scripts/safe_run.sh --profile build --project-root <项目根> -- bash <S>/scripts/ios/build.sh --device`）：
