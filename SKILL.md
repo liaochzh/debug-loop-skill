@@ -25,6 +25,10 @@ metadata:
 4. **先读项目台账**（存在则必读）：`docs/test/debug-loop/pitfalls.md` 是**按项目累积**的逐坑表
    （症状 / 判据 / 处置 / 证据），命中同类症状直接照「处置」做，不要再自行摸索一遍。
    收尾时用 `bash <S>/scripts/pitfall_append.sh --symptom … --judge … --action …` 把新坑写回（自带落点，子代理可调用）。
+5. **再查流程库**（存在则必读）：`docs/test/debug-loop/flows/index.md` 记录**已跑通的步骤序列**（由 `flow_save.sh` 维护）。
+   - **A 级命中** ⇒ 直接 `bash <S>/scripts/flow_run.sh --name <名>` 一条命令回放，不要再逐步探索；
+   - **B 级命中** ⇒ **先问用户同意**，同意后加 `--allow-confirm` 回放（**未获同意不得自行授权**，见下「流程固化与回放」）；
+   - **未命中** ⇒ 走逐步探索；本次全部步骤成功且断言通过后**必须** `flow_save.sh` 固化（下次即一条命令）。
 
 ## 执行约定
 
@@ -120,7 +124,7 @@ metadata:
 - **写面**：项目 `build/`、`docs/test/`、`$TMPDIR`、`/private/tmp`；`--profile build` 才放开整个项目根。`~/.ssh`、`~/.aws`、`~/.gnupg`、`~/.netrc`、Keychains 全拒；`.env*` 读不到，仅 `.debug.env` 可读。
 - **`<S>` 必须绝对路径**：`~` / `$HOME` / 相对路径不匹配白名单 ⇒ 秒拒。
 - **`117` = 沙箱不可用（fail-closed）**：停下并回报，不得裸跑绕过；其余退出码是脚本自己的（`snapshot.sh` 的 `4` = 语义树为空，属正常观测）。
-- **必须交回主 agent**：`flutter build ios`（嵌套沙箱被系统拒，换 profile 也无效）与 `devicectl install`（沙箱内能力缺失）。回报写「需主 agent 在宿主机执行」。
+- **必须交回主 agent**：`flutter build ios`（嵌套沙箱被系统拒，换 profile 也无效）、`devicectl install`（沙箱内能力缺失）、**起宿主 Appium 服务**（沙箱内起会继承 Seatbelt profile 成残废服务；主 agent 在宿主跑 `bash <S>/scripts/appium/host_server.sh ensure --project-root <项目根>`，子代理只复用，未就绪时 `ensure_appium_server` 返回 rc=3 并给指引）。回报写「需主 agent 在宿主机执行」。
 - **沙箱内 iOS 模拟器语义能力不可用**：`snapshot.sh` / `assert_page.sh --platform ios` 与 `maestro/*` 的 iOS 路径 rc=3 快失败 ⇒ 降级 `shot.sh` + `logs.sh`，不重试。
 - **禁止**：`>` / `>>` 重定向；`&&` / `;` 串联裸命令（都会绕过沙箱入口）。
 - 完整判据（`Operation not permitted` 读法、profile 放行清单、Flutter SDK 缓存软链、内联脚本形态）→ `references/permission-discipline.md`。
@@ -135,7 +139,7 @@ metadata:
 | `tap_verify.sh <关键词> [--expect has:<文本>…] [--expect none] [--wait 10] [--retry 1] [--index N] [--id] [--allow-danger] [--allow-weak] [--platform android\|ios-device] [--dry-run] [--json]` | 待实测（≈ settle + 1 次快照 + `assert_page --wait` 若干轮；替代手工 3–4 轮） | **点击 + 回执**：`settle → fresh 快照 → 语义定位 → 点击 → assert 轮询`；未过时先判「页面是否已变化」，已变化**不再点第二次**（防登录/提交/删除被重复触发），危险词（删除/解绑/支付/提交/确认…）默认禁二击、`--allow-danger` 放开（**启发式，非唯一防线**）。`--expect none` 主判「目标节点消失 / 节点数变化」；**仅文本集变化属弱证据**（自动刷新页倒计时/轮播会自行漂移）⇒ 打 `❌ 弱判据` 并按未通过算，`--allow-weak` 才放行。点后快照失败/不可解析（含断言路径）⇒ 判「无法判定」，**fail-closed 不重点**。android 走 `adb input tap`；ios-device 转 `appium/tap.sh` + `appium/assert.sh`（语义点击，rc 分流：1=未找到/7=驱动失败）；`ios`/`macos`/`windows` ⇒ rc=3 指引 Maestro / smart_tap。现场落 `build/debug/interact/<ts>-tap.json`（不含明文值）。退出码：`0` 通过 / `1` 未达预期或无法判定（附 diff 与降级建议）/ `2` 用法错 / `3` 平台或环境不支持 / `4` 语义树为空 / `5` 快照失败 / `7` 派发失败 |
 | `tap_snapshot.sh "<文本>" [--id] [--index N] [--exact] [--dry-run] [--fresh] [--max-age 60] [--keep-cache] [--json] [--platform android\|macos] [--input <snapshot.json>]` | 命中缓存 **<1 s**；无缓存 ≈ 一次 `snapshot.sh` + 点击（Android 合计 ~6 s） | 用快照 `bounds` 的中心点做**坐标点击**（一次快照 → 点击）。匹配语义 = `assert_page` 的 `has`（text∪id、字面包含、忽略大小写；`--exact` 精确且大小写敏感），**是 `tap.sh --text` 的超集**（能点 `clickable=false` 的文本节点，此时打 ⚠️）。**缓存**：复用 `snapshot.sh` 落盘的 `last_snapshot.json`（TTL 默认 60 s、按 `_meta.platform` 校验；点击成功后 `last` 轮转为 `prev_snapshot.json`（只作 `snapshot.sh --diff` 的基线，**绝不**作坐标来源），`--keep-cache` 保留，`--dry-run` 不轮转，`--max-age 0` ≡ `--fresh`）。平台：`android`（`adb input tap`）/ `macos`（`click.sh`，**实验**：`AXFrame` 形态未真机实测）；`ios` ⇒ rc=3 指引 `maestro/tap.sh`，`ios-device` ⇒ rc=3 指引 `appium/driver.py find-click`，`windows` ⇒ rc=3。疑似离屏（负坐标/越界）也打 ⚠️。退出码：`0` 点击完成 / `1` 未命中或 `--index` 越界 / `2` 用法错 / `3` 平台不支持 / `4` 语义树为空 / `5` 快照失败 / `6` 无可用坐标 / `7` 点击派发失败。⚠️ **rc=0 仅表示指令已送达**（`adb input tap` 无回执），是否响应必须另用 `assert_page.sh` 判 |
 
-> 耗时口径：`see_pro` + Android 真机 R38N405KJYB + iOS 模拟器 iPhone 17e，每项 3 次取中位，已热机（不含首次 JVM/驱动冷启动）。明细见 `docs/test/20261029-assert-timing.md`。
+> 耗时口径：`see_pro` + Android 真机 R58M00TEST1 + iOS 模拟器 iPhone 17e，每项 3 次取中位，已热机（不含首次 JVM/驱动冷启动）。明细见 `docs/test/20261029-assert-timing.md`。
 > ⚠️ iOS 模拟器路径**明显慢于 Android**（Maestro 为 JVM 进程，单次固定开销十几秒）：≥3 条断言优先 `maestro/assert_batch.sh`（一次 flow 摊薄），只 1–2 条且需子串/数量断言时用 `assert_page.sh`。
 
 > 断言文件示例（`docs/test/` 下随任务生成）：
@@ -144,6 +148,38 @@ metadata:
 > has-not 加载中
 > count 在线 3
 > ```
+
+## 流程固化与回放（`<S>/scripts/` — 跨平台）
+
+**目的**：同一序列（启动→登录→断言…）不必每次重想一遍。固化产物落项目 `docs/test/debug-loop/flows/`
+（`<名>.json` + 自动重建的 `index.md`），沙箱 ui profile 可写，**不依赖 agent 自己写文档**。
+通用模板在 `<S>/templates/flows/`（`smoke` / `login` / `collect` / `build-collect`），项目内未命中时自动回退到模板。
+
+| 命令 | 说明 |
+|---|---|
+| `flow_save.sh --name <名> --platform P [--profile ui\|build\|ios\|macos] --device <D> [--precond 文本] (--step "…" 可重复 \| --steps 文件) [--note 文本]` | 把**已跑通**的序列固化成流程。`--device` 必填（Android serial / iOS UDID / macOS 写 `local`）。校验：cwd 须有 `.debug.env`；步骤首 token 必须是 `scripts/` 下真实脚本；拒收明文秘密（含对密码/验证码类字段用 `--text`）、env 前缀、`&`/`;`/`\|`/重定向/变量展开/`..`/命令替换；`--precond`/`--note`/`--device` 不得含换行（防元数据被解析成额外键）。iOS 收 `run/shot/logs/logclear/install`，macOS 收 `run/shot/logs`，两者另收 `appium/tap\|assert\|flow`。同名覆盖留 `.bak.<时间戳>`。rc：`0` 存 / `2` 用法或校验 / `3` 写入失败或非项目根（缺 `.debug.env`） |
+| `flow_run.sh --name <名> [--allow-confirm] [--from-step N] [--dry-run]` | 回放。**非 A 级未授权 ⇒ rc=6 且零设备动作**（不建目录、不跑步骤；`grade` 缺失/坏值一律按需授权处理，fail-closed）。`--dry-run` 只列计划。rc：`0` 全过 / `1` 步骤失败或设备不符 / `2` 用法（含步骤含 `&`/`$`/`..` 等非法形态）/ `3` 流程不存在或非项目根 / `4` 平台不受支持 / `6` 需授权（**步骤脚本自己的 rc=6 只记进步骤表 ⇒ 流程 rc=1**，如 `input.sh` 读回不符） |
+| `evidence.sh [--platform P] [--assert 文件] [--has 文本]… [--wait N] [--lines N] [--no-settle] [--no-logs] [--note 文本]`<br>`evidence.sh [--platform P] --artifact` | 一条命令出**取证包** `build/debug/evidence/<ts>/`：`settle → snapshot 摘要 → 日志异常摘要 → 可选断言`，每项一个文件 + `summary.txt` 一行结论。iOS 模拟器语义 rc=3 ⇒ 按既有契约自动降级 `shot.sh` + `logs.sh` 并注明。`--artifact` 走**无设备路径**：读 `build/debug/.last_*` 锁文件输出产物路径 / 是否存在 / `sha256`（目录产物给文件数与 `Info.plist` sha256（macOS bundle 取 `Contents/Info.plist`））；**不给 `--platform` 时扫描全部锁文件**（设备不在线也能校验构建产物），给了则只认该平台且缺锁即失败。rc：`0` PASS / `1` 有失败项 / `2` 用法 / `3` 平台不可判定或非项目根 |
+
+**步骤规范形态（唯一口径，flow_save / flow_run / 模板共用）**：
+- 相对 `scripts/` 的**完整路径**：`android/run.sh`、`assert_page.sh`、`maestro/flow.sh`、`evidence.sh`；
+- 跨平台流程写 `<platform>/<script>.sh`，回放时按元数据 platform 展开（`ios-device` → `ios`）；
+- 一步 = 一条脚本调用：**禁** env 前缀、`cd`、`;`、`&&`、管道、重定向、`$( )`。
+
+**分级（决定能否免确认直跑）**：A 级 = 纯语义步骤 + 有断言 + `profile ui` + Android；
+命中以下任一即 **B 级**（回放前必须用户同意）：坐标点击 `tap.sh <x> <y>`、点击关键词命中基线危险词
+（删除/解绑/支付/提交/确认…，与 `tap_verify.sh` 同表）、命令串命中扩展危险词（`clean`/`uninstall`/`pm clear`）、
+含 `--allow-danger`/`--allow-weak`、`profile≠ui`、**无断言步骤**（观察型，只能声称「已执行」）、iOS/ios-device/macOS。
+分级是**启发式护栏，不是唯一防线**；`--allow-confirm` 只在用户明确同意后加。
+
+**失败与续跑（强制）**：
+- 回放失败 **禁止整流程重跑**（登录/提交/删除类步骤会重复触发事务）；用 `--from-step N` 续跑，或回退逐步探索。
+- 每步结束立即写 `build/debug/flows/<名>-<ts>/journal.jsonl`（被强杀也留现场），失败自动落 `fail-snapshot.txt`。
+- 连败 ≥2 次标 `stale`，回放前会告警 ⇒ UI 可能已漂移，失败后更新流程（`flow_save` 覆盖）而不是盲重试。
+
+**设备与凭据**：Android 回放注入 `ANDROID_SERIAL`（不在线 ⇒ rc=1，**不静默换机**）；iOS 真机注入 `IOS_DEVICE_UDID` + `IOS_TARGET=device`；
+iOS 模拟器**只校验不注入**（booted 与元数据 UDID 不符 ⇒ rc=1）；macOS 设备字段仅记录 `local`。
+凭据一律 `--text-from .debug-login.secret --key <角色>`（密码加 `--mask`），流程 JSON / journal / argv 都不含明文。
 
 ## 产物解析（多 flavor/ABI/mode 通用）
 
@@ -169,7 +205,7 @@ metadata:
 
 单元测试与平台无关：`bash <S>/scripts/test.sh [路径]`。
 脚本层回归**统一入口**（不需真机）：`bash <S>/scripts/test_all.sh`（rc `0` 全过 / `1` 有失败 / `2` 用法错）。
-默认串联七项：`test_common.sh`（.debug.env 解析 + Android 非 Flutter 支持）、`test_bg.sh -f 静态`（语法 + 多字节隐患）、`test_snapshot.sh`（快照解析 + 断言 + 点击选点/缓存 + `--diff` 变化判定 + 断言失败附 diff + `--wait` 轮询 + `--single-dump`/`--cache-payload`，296 项离线用例）、`test_safe_run.sh`（沙箱入口负控制：凭证面/写面/出网面/fail-closed/真机通道/build profile 的 SDK 缓存（含软链解析）与 trustd，**43 项**；非 macOS 自动跳过）、`test_build_metrics.sh`（`INTERNAL_METRICS` 内测包状态机：注入/还原/pending/sha 守卫/模式沿用，**27 项**，stub 构建、非 macOS 与沙箱内跳过）、`test_ios_common.sh`（`ios/_common.sh` 纯函数：syslog 行正则转义与头部锚定、App 可执行名四级回退，**12 项**）、`test_interact.sh`（输入/点击回执/坑表：`input.sh` 逐 rc + 清空/掩码/`--append`/`--text-from`/`--account` 账号组/`--editable-index`/占位符哨兵探测、`tap_verify.sh` 的「已变不重点」「危险词禁二击」、`pitfall_append.sh` 去重，**184 项**，adb 桩会在 `ui.xml` 上真改内容）；加 `--full` 额外跑 `test_bg.sh` 全量行为用例（较慢）。
+默认串联九项：`test_common.sh`（.debug.env 解析 + Android 非 Flutter 支持）、`test_bg.sh -f 静态`（语法 + 多字节隐患）、`test_snapshot.sh`（快照解析 + 断言 + 点击选点/缓存 + `--diff` 变化判定 + 断言失败附 diff + `--wait` 轮询 + `--single-dump`/`--cache-payload`，296 项离线用例）、`test_safe_run.sh`（沙箱入口负控制：凭证面/写面/出网面/fail-closed/真机通道/build profile 的 SDK 缓存（含软链解析）与 trustd，**46 项**；非 macOS 自动跳过）、`test_build_metrics.sh`（`INTERNAL_METRICS` 内测包状态机：注入/还原/pending/sha 守卫/模式沿用，**27 项**，stub 构建、非 macOS 与沙箱内跳过）、`test_ios_common.sh`（`ios/_common.sh` 纯函数：syslog 行正则转义与头部锚定、App 可执行名四级回退，**12 项**）、`test_interact.sh`（输入/点击回执/坑表：`input.sh` 逐 rc + 清空/掩码/`--append`/`--text-from`/`--account` 账号组/`--editable-index`/占位符哨兵探测、`tap_verify.sh` 的「已变不重点」「危险词禁二击」、`pitfall_append.sh` 去重，**184 项**，adb 桩会在 `ui.xml` 上真改内容）、`test_appium_host.sh`（宿主 Appium 服务管理 + 沙箱内快失败，假 `/status` 服务）、`test_flow.sh`（流程固化/回放/取证：分级五维、B 级 rc=6 零动作、`--from-step` 与越界、journal 即时落、设备注入/不在线/模拟器 UDID 不符、两层危险词表、`evidence.sh --artifact` 的 sha256 与无设备全平台扫描、无 +x 脚本步骤可执行，**146 项**，adb/xcrun 桩 + `FLOW_STEP_DIR` 步骤桩）；加 `--full` 额外跑 `test_bg.sh` 全量行为用例（较慢）。
 离线用例的测试钩子（正常使用不要设）：`SNAPSHOT_INPUT=<xml|csv>`（`snapshot.sh` 跳过 dump 走完整解析/写缓存路径）、`SNAPSHOT_BIN=<script>`（`assert_page.sh` / `tap_snapshot.sh` 替换取快照；`assert_page --wait` 通过后的 `--cache-payload` 落盘仍走真实脚本）。
 
 ## 长任务后台模式（bg.sh）
