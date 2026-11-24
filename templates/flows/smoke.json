@@ -1,0 +1,24 @@
+{
+ "version": 1,
+ "template": true,
+ "name": "smoke",
+ "platform": "android",
+ "profile": "ui",
+ "device": "",
+ "precond": "已装 App；断言文件 docs/test/assert-smoke.txt 已按本项目首页文案填写",
+ "note": "通用冒烟模板：启动 → 等静止 → 断言首页。device 留空 ⇒ 按 adb 默认首台执行；固化到项目流程库时用 flow_save 写 --device。断言文件缺失会失败，先跑 assert_page.sh --has <首页文案> 确认文案再落文件。",
+ "grade": "A",
+ "observe_only": false,
+ "steps": [
+  "android/run.sh",
+  "android/settle.sh",
+  "assert_page.sh --file docs/test/assert-smoke.txt"
+ ],
+ "created_at": 0,
+ "updated_at": 0,
+ "last_success_at": null,
+ "success": 0,
+ "failure": 0,
+ "consecutive_failures": 0,
+ "status": "active"
+}
