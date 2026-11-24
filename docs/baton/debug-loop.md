@@ -1,6 +1,6 @@
 # debug-loop skill：settle/findtap 判据 + 文档下沉（baton）
 
-> 最后更新：2026-11-12
+> 最后更新：2026-11-18
 > 本文件 owner：`~/.config/opencode/skills/debug-loop` 这条线（**目录级软链** → `~/Projects/debug-loop-skill`，GitHub `liaochzh/debug-loop-skill`，private）。方案与审查（r1「需修改」→ r2「有条件通过」）已归档：`docs/archive/2026-11-debugloop-next与iOS回退.md`（内部归档，不入库；原 `plan/20261027-debugloop-next{,.review}.md`、`review/debugloop-next{,.r2}.md`、`review/20261104-ios-sandbox-fallback-appium-pointer{,.r2}.md`）。
 
 ## 模块结构
@@ -8,7 +8,7 @@
 - 历史回滚点：`~/debug-loop-snap-20261027/`（入库前的快照；现可直接 `git revert`/`git checkout`）
 - 判据公共段：`scripts/android/_common.sh`（`MIN_DUMP_BYTES` / `SETTLE_MIN_PNG_BYTES` / `SETTLE_FRAME_ALARM` / `ui_has_semantics()`）
 - 被测对象：`scripts/android/settle.sh`、`scripts/android/findtap.sh`
-- 回归：`scripts/test_common.sh`（G1–G13，112 项）、`scripts/test_bg.sh`（215 项，约 33s）、`scripts/test_safe_run.sh`（43 项）、`scripts/test_build_metrics.sh`（27 项）、`scripts/test_ios_common.sh`（12 项）；`scripts/test_all.sh` 串联六项
+- 回归：`scripts/test_common.sh`（G1–G13，120 项）、`scripts/test_bg.sh`（215 项，约 33s）、`scripts/test_safe_run.sh`（46 项）、`scripts/test_build_metrics.sh`（27 项）、`scripts/test_ios_common.sh`（12 项）、`scripts/test_interact.sh`（184 项）、`scripts/test_appium_host.sh`（70 项）、`scripts/test_flow.sh`（146 项）；`scripts/test_all.sh` 串联九项
 - 文档：`SKILL.md`（371 行）+ `references/{macos-smart,appium-ios-device,maestro-flow-snippets,troubleshooting,autoDebug-task-template}.md`
 
 ## 关键约束
@@ -105,7 +105,7 @@
   修法：新增 `--editable-index N`（页面上第 N 个可编辑框，上→下排序），定位与读回都用它。
 - 门禁：`test_interact.sh` **137 项**、`test_common.sh` **120 项**、`test_all.sh` 七项全绿。
 
-### 真机验证结论（2026-11-12 第二轮：Android 12 真机 moto_g_pure `ZY22GT4HNG`）
+### 真机验证结论（2026-11-12 第二轮：Android 12 真机 moto_g_pure `R58M00TEST1`）
 
 设备：**真实 Android 12 真机**（不是模拟器），App = `com.xiaotunsmart.tonge` 登录页 + 系统设置搜索。
 
@@ -138,7 +138,7 @@
 - **`_field_target` 的 rc=1 是预期路径**：用 `|| echo '{}'` 兜会把 JSON 与 `{}` 拼进同一条流，下游 `json.load` 直接失败 ⇒ 候选清单静默丢失（用 `|| true`）。
 - 校验阶段空树要**重取一次**，仍空 ⇒ rc=4；混成 rc=6（读回不符）会把排障引向「IME 掉字」。
 - **`require_device` 不读 `ANDROID_SERIAL`**：`adb devices` 首台即目标。模拟器 + 真机同时在线时首台可能是真机
-  （实测 `ZY22GT4HNG` 排在 `emulator-5554` 前，脚本全线改打真机）⇒ 要么只留目标设备，要么先 `adb devices` 核实。
+  （实测 `R58M00TEST1` 排在 `emulator-5554` 前，脚本全线改打真机）⇒ 要么只留目标设备，要么先 `adb devices` 核实。
 - **autoDebug 子代理的模型 `opencode-go/beam-free#high` 在本机被地域拦截**（`This model is not available in your country`，
   两次派发均失败）⇒ 需真机回归时先确认该 agent 的模型可用，否则由主会话按机械命令接手。
 
@@ -153,9 +153,9 @@
   ⚠️ 调用点必须写成 `if fn; then rc=0; else rc=$?; fi` —— 函数体内会 `set -e`，用 `set +e; fn; rc=$?` 会静默 exit 1。
 
 ### 真机 + 模拟器实测（autoDebug，2026-11-12 第三轮）
-- **多设备选择四态全 PASS**：默认（首台=真机 `ZY22GT4HNG`，bounds `[0,0][720,1600]`）；`ANDROID_SERIAL=emulator-5554`
+- **多设备选择四态全 PASS**：默认（首台=真机 `R58M00TEST1`，bounds `[0,0][720,1600]`）；`ANDROID_SERIAL=emulator-5554`
   ⇒ `[0,0][1080,2400]`；`=ghost-9999` 与 `='*'` ⇒ **rc=1**「不在线」且不输出任何快照行（失败关闭、无 glob 误匹配）。
-- **maestro 设备路由实测同机**：`ANDROID_SERIAL=ZY22GT4HNG` / `=emulator-5554` 分别打印
+- **maestro 设备路由实测同机**：`ANDROID_SERIAL=R58M00TEST1` / `=emulator-5554` 分别打印
   `🎭 平台: android | 设备: <id>` ⇒ `resolve_device` 的优先级改动真生效（真机中文 locale 令 `Tap on "Search settings"`
   失败、flow rc=1，但设备选择判据与 flow 成败无关）。
 - **真机输入闭环未回归**：真机 Settings 搜索框（`android:id/search_src_text`，空时 text=`搜索…`）
@@ -168,7 +168,44 @@
   且**不能**用 `cd` / `&&` / 重定向 / 行首 `VAR=`（切目录靠 shell 工具的 `workdir`，设变量用 `--` 之后的 `env`）。
   完整对照表见 `references/autoDebug-task-template.md` §命令形态。
 
+## 流程固化 + 分级回放 + 取证包（2026-11-17）
+
+方案 `~/docs/plan/20261117-autodebug-flow-replay.md`（v3；设计侧审查 r1 有条件通过 → r2 通过，档案同目录 `.review.md` / `.review.r2.md`）。代码审查：`docs/review/20261117-autodebug-flow-replay-code{,.r2}.md`（r1 不通过 P0×1+P1×5+P2×7 → 修复 → **r2 LGTM**；r2 余 5 条 P2 中 4 条已跟进，`.bak` 同秒窄窗保留为已知限制）。
+
+### 落地
+- `scripts/flow_save.sh`：把已跑通序列固化到项目 `docs/test/debug-loop/flows/<名>.json` + 自动重建 `index.md`。**分级**：坐标点击 / 基线危险词（点击关键词）/ 扩展危险词（命令串：`clean` `uninstall` `pm clear`）/ `--allow-danger`/`--allow-weak` / `profile≠ui` / 无断言（观察型）/ iOS·ios-device·macOS ⇒ **B 级**，否则 A。同名覆盖留 `.bak.<时间戳>`，原子写 + 写后回读。
+- `scripts/flow_run.sh`：回放。**B 级未授权 rc=6 且零设备动作**；`--from-step N` 续跑（仍受门禁）；每步即写 `build/debug/flows/<名>-<ts>/journal.jsonl`，失败落 `fail-snapshot.txt` 并打印「禁止整流程重跑」。**rc=6 只属于门禁**，步骤脚本自身 rc=6（如 `input.sh` 读回不符）只记步骤表 ⇒ 流程 rc=1。
+- `scripts/evidence.sh`：一条命令出取证包 `build/debug/evidence/<ts>/`（settle → snapshot → logs 异常摘要 → 可选断言）；`--artifact` 走无设备路径读 `.last_*` 锁，输出路径/存在/`sha256`（目录产物给 `sha256(Info.plist)` + 文件数）。
+- `scripts/_danger_words.sh`：两层表单一来源。基线表与 `tap_verify.sh` 原字面量**逐字一致**（行为保持），扩展表只给 `flow_save`。
+- `scripts/_flow_index.py`：索引重建单一实现（flow_save/flow_run 共用）；`scripts/test_flow.sh`（143 项离线桩回归，第 9 项接入 `test_all.sh`）。
+- `templates/flows/{smoke,login,collect,build-collect}.json`：`device` 留空 ⇒ 按 adb 默认首台；`login` 凭据走 `--text-from … --key ACCOUNT/PASSWORD`（密码 `--mask`）；`collect`/`build-collect` 观察型 ⇒ B 级。
+- 文档：`SKILL.md` 前置检查加第 5 步 + 新增「流程固化与回放」节；`references/autoDebug-task-template.md` 加回放任务书 + 硬条款「未获用户同意不得授予 `--allow-confirm`」；`opencode.jsonc` 的 autoDebug system 加「回放优先」+ 中止白名单第 6 类 + 回放失败例外，build system 加 A 级直跑 / B 级先 `question`。
+
+### 验证
+- 离线：`test_flow.sh` 146 ✅、`test_all.sh` 九项全绿、`test_bg.sh -f 静态` ✅、`test_interact.sh` 184 ✅（词表重构回归）、`verify-env-guard.py --gate --quiet` rc=0。
+- 真机（Android，占位设备 `R58M00TEST1`）：语义 3 步流程（`android/settle.sh` → `snapshot.sh --platform android` → `assert_page.sh --has <页面文案>`）固化判 A → 回放 rc=0；坐标流程判 B → 未授权 rc=6 且**未建 bundle**；`evidence.sh --has <文案>` rc=0（settle/snapshot/assert 全 ✅，logs 因 App 未运行 ⚠️ 不致命）。
+- 补充验证（2026-11-18，iOS 模拟器，`iPhone 18 Pro`）：桩工程（`$TMPDIR` 下最小 `pubspec.yaml` + `.debug.env`，非真实 App）——
+  单步流程 `ios/shot.sh` 固化判 **B**（降级平台 + 观察型）→ 未授权 **rc=6 零动作** → 授权后 **rc=0**（截图 3.5 MB）；
+  UDID 不符 **rc=1 不换机**；`evidence.sh --platform ios` **rc=0**（maestro 语义 34 节点，logs 因 App 未运行 ⚠️ 不致命）。
+  附带确认：`ios/*` 脚本要求工程根有 `pubspec.yaml`（缺失即 rc=1，属正常前置）。
+- 降级分支实测（`SAFE_RUN_PROFILE=ui` 注入沙箱条件）：`snapshot` **rc=3** ⇒ 取证包自动降级 `shot.png`（主证据）+ `logs.txt`，结论「仅观测，不能声称功能验证通过」。
+- 双设备选台实测（真机 `R58M00TEST1` + `emulator-5554`）：流程绑模拟器 ⇒ 步骤日志 `设备: emulator-5554`；绑真机 ⇒ `设备: R58M00TEST1`；绑不存在设备 ⇒ **rc=1** 并列出两台在线设备（不静默换机）。
+- macOS 回放实测（桩 `.app`：`Contents/MacOS/<名>` 为可执行脚本 + `Contents/Info.plist`，工程根有 `pubspec.yaml` + `MACOS_APP_NAME`）：
+  `macos/run.sh` + `macos/logs.sh` 两步流程固化判 **B**（降级平台 + 观察型）→ 未授权 **rc=6** → 授权后 **rc=0**，`app.log` 收到 App stdout。
+  未跑 `macos/shot.sh`：它抓**全屏**（会拍下用户桌面），不适合验证。
+- **macOS artifact 缺陷（已修）**：`.app` 的 `Info.plist` 在 `Contents/` 下，原实现只查 bundle 根 ⇒ 永远报「目录，无 Info.plist」。
+  现按「根 → `Contents/Info.plist`」两级查找并标注来源；结论文案同步改为「文件给 sha256，目录给文件数 + Info.plist sha」。
+- 真 APK 产物校验实测：131 MB 真实 APK ⇒ `--artifact` 输出 `size=131387026` + `sha256=4711feb0…5edeb`，与独立 `shasum -a 256` **逐字一致**（此前只用桩文件验过）。
+- 未覆盖只剩「真实 Flutter 构建产物」（需工程与 gradle 依赖）；`--artifact` / 回放 / 取证各分支均已实测。
+
+### 本轮新增的坑
+- **脚本没有可执行位**：`scripts/` 下多数脚本仅以 `bash <脚本>` 形态调用（无 +x）。回放若直接 `bash -c "<脚本> …"` 会 `Permission denied`（rc=126）⇒ 必须显式前置解释器（`bash` / `.py` 用 `python3`）。`test_flow.sh` 已用 644 桩锁住。
+- **同一秒内多次回放会撞 bundle 目录**：`<名>-<ts>` 秒级时间戳不够，第二个 bundle 会覆盖第一个（journal 串行）。现按 `-2/-3` 递增避让（`evidence.sh` 同）。
+- **陈旧流程必然失败**：真机页面漂移（设备换页）后原断言必然 rc=1 —— 这是正确行为，按 `--from-step` / 重新 `flow_save` 处理，不要整流程重跑。
+- 测试断言别用 `ls -t` 取「最近一次」产物：同秒并列时顺序不定，从脚本输出里解析 journal/取证包路径更稳。
+
 ## 发布（推送到 GitHub）
+
 - 本机权限层对所有 agent 硬性 deny `git push*`（build / autoDebug / commit 档），**不要反复重试**；agent 唯一发布入口是白名单脚本：
   ```bash
   bash ~/.config/opencode/scripts/publish.sh ~/Projects/debug-loop-skill          # 发布当前分支
@@ -197,5 +234,14 @@
 - 顺带修既有缺陷：`input.sh` 的 `--text-from -` 原被当成未知参数（文档却说等价 stdin）⇒ 现真正走 stdin，并有用例锁住；stdin 配 `--key` 改为 rc=2（不再静默忽略键名）。
 - 未做：真实账号登录 + `assert_page has:<账号标识>` 身份断言（真机只验证了输入管线，见下条）；`.debug.env` 不做 flavor→账号映射；`flow` 的 `type` 步骤仍只收内联 text。
 - 坑：`references/maestro-flow-snippets.md` 原建议 `source .debug-login.secret`，含组头行会被当命令执行 ⇒ 已改为 `_secret.py get` 命令替换。
-- 真机闭环（2026-11-14，`R38N405KJYB`，Android Settings 搜索框，仅验证输入管线）：`input.sh --id search_src_text --text-from .debug-login.secret --account buyer --key ACCOUNT` rc=0 → `assert_page --has acctA1 --has-not acctB1 --has-not flat-acct` 3/3；密码 `--mask` rc=0 且 stdout 无明文；切 `merchant` 后 `has acctB1` 且 `has-not acctA1`；`--account ghost` rc=2 并提示「可用组: buyer, merchant」；清理 + 回桌面成功。截图归档 `~/docs/test/debug-loop/20261114-multi-account/shot-{groupA,groupB,cleanup}.png`（夹具工程建在 `$TMPDIR/opencode/dbg-tonge`，凭据文件已删）。
+- 真机闭环（2026-11-14，`R58M00TEST1`，Android Settings 搜索框，仅验证输入管线）：`input.sh --id search_src_text --text-from .debug-login.secret --account buyer --key ACCOUNT` rc=0 → `assert_page --has acctA1 --has-not acctB1 --has-not flat-acct` 3/3；密码 `--mask` rc=0 且 stdout 无明文；切 `merchant` 后 `has acctB1` 且 `has-not acctA1`；`--account ghost` rc=2 并提示「可用组: buyer, merchant」；清理 + 回桌面成功。截图归档 `~/docs/test/debug-loop/20261114-multi-account/shot-{groupA,groupB,cleanup}.png`（夹具工程建在 `$TMPDIR/opencode/dbg-tonge`，凭据文件已删）。
 - 方案/审查：`docs/plan/20261112-multi-account-secret{,.review}.md`、`docs/review/20261112-multi-account-secret{,.r2}.md`；提交 `fa158a0`（15 文件，测试 184 项），baton 收尾 `d3946b6` / `720834e`。
+
+## Appium 宿主服务 + 沙箱快失败（2026-11-16）
+
+- **谁来起 `:4723`**：宿主直跑自动拉起；**`safe_run` 沙箱内不启动**（Seatbelt 由子进程继承且终身不可脱 ⇒ 沙箱内起的 appium 即使 `/status` ready，做 WDA 时 xcodebuild/devicectl/mach 全被拒 = 残废服务）。沙箱内未就绪 ⇒ `rc=3` 快失败 + 打印宿主命令，**不要重试、不要换形态**。
+- `scripts/appium/host_server.sh ensure|status|stop`（宿主执行）：幂等复用；`stop` 只杀自己 pid 文件记录且命令行含 appium 的进程，不误杀手工服务；沙箱内调用 rc=2。产物 `build/debug/appium-host.{log,pid}`（与沙箱内 `appium.log` 分开）。
+- 就绪判据单一来源 `scripts/appium/_ready.sh`：必须 `"ready": true`（只匹配 `"ready"` 子串会把 `ready:false` 判成就绪）。
+- `wda_prepare.sh` 产物目录改为 `debug-info/wda-prebuilt`（`rm -rf build` 不清），`_common.sh` 自动发现按「新路径 → 旧 `build/debug/wda-prebuilt`」回退；`.debug.env` 新增 `IOS_XCTESTRUN` / `IOS_PREBUILT_WDA`（避免把含 UDID 的绝对路径提交进仓库）。
+- `safe_run.sh` 的 `ALLOW_ROOTS` 同时登记 `~/projects` 与 `~/Projects`：匹配器大小写敏感、macOS FS 不敏感 ⇒ 只登记一种会让另一方向恒 rc=2（2026-11-16 事故：16 拒中 13 拒纯属此因）。文档与 README 统一写小写磁盘真名。
+- 回归：`test_appium_host.sh` 70 项（假 `/status` 服务 + PATH 剥离 appium，钉死幂等复用/不误杀/rc 契约）、`test_safe_run.sh` 46 项。提交 `df8fa09`。
