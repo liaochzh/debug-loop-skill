@@ -25,7 +25,7 @@
 
 ```bash
 # 方式一：软链（推荐，跟随仓库更新）
-ln -s ~/Projects/debug-loop-skill ~/.config/opencode/skills/debug-loop
+ln -s ~/projects/debug-loop-skill ~/.config/opencode/skills/debug-loop
 
 # 方式二：整目录复制
 cp -R debug-loop-skill ~/.config/opencode/skills/debug-loop
