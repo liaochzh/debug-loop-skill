@@ -1,0 +1,23 @@
+{
+ "version": 1,
+ "template": true,
+ "name": "build-collect",
+ "platform": "android",
+ "profile": "build",
+ "device": "",
+ "precond": "项目根已配好构建参数（.debug.env 的 ANDROID_APP_ID / flavor 等）；非 Flutter 原生工程请改用 gradlew 手工构建",
+ "note": "通用构建+产物校验模板：构建 → evidence.sh --artifact（读 build/debug/.last_android_apk，输出路径/存在/sha256，无需设备）。profile=build ⇒ B 级，回放需用户同意。",
+ "grade": "B",
+ "observe_only": true,
+ "steps": [
+  "android/build.sh",
+  "evidence.sh --artifact"
+ ],
+ "created_at": 0,
+ "updated_at": 0,
+ "last_success_at": null,
+ "success": 0,
+ "failure": 0,
+ "consecutive_failures": 0,
+ "status": "active"
+}
