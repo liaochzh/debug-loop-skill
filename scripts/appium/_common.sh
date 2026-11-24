@@ -21,6 +21,10 @@ fi
 # shellcheck source=/dev/null
 [ -f "$_SELF_DIR/../_ios_device.sh" ] && source "$_SELF_DIR/../_ios_device.sh"
 
+# 就绪判据单一来源（无副作用，宿主侧 host_server.sh 也 source 同一份）
+# shellcheck source=/dev/null
+source "$_SELF_DIR/_ready.sh"
+
 if [ ! -f "pubspec.yaml" ]; then
   echo "❌ 请在 Flutter 项目根目录执行本脚本（当前: ${PWD}）"
   exit 1
@@ -49,15 +53,29 @@ require_appium() {
   }
 }
 
-# Appium 服务是否在线
+# Appium 服务是否在线（判据单一来源见 _ready.sh：必须 `"ready": true`，不能只匹配子串）
 appium_online() {
-  curl -s -m 3 "$APPIUM_SERVER/status" 2>/dev/null | grep -q '"ready"'
+  appium_status_ready "$APPIUM_SERVER"
 }
 
-# 确保 Appium 服务在跑（不在则后台启动并等待就绪）
+# 是否跑在 safe_run 沙箱内：safe_run.sh 会透传 SAFE_RUN_PROFILE（test_safe_run.sh N10 实证）
+in_sandbox() { [ -n "${SAFE_RUN_PROFILE:-}" ]; }
+
+# 确保 Appium 服务在跑。
+# ⚠️ 沙箱内**不启动**：Seatbelt profile 由子进程继承且终身不可脱 ⇒ 沙箱内起的 appium 即使
+#   /status 报 ready，后续 xcodebuild / devicectl / mach services 全被拒 ⇒ 残废服务，
+#   调用方会误以为就绪而在创建会话处空等。故沙箱内只复用宿主服务，未就绪则 rc=3 快失败 + 指引。
+#   宿主侧一键起服务：scripts/appium/host_server.sh（**不经 safe_run**）。
 ensure_appium_server() {
   if appium_online; then
     return 0
+  fi
+  if in_sandbox; then
+    echo "❌ Appium 服务未就绪（${APPIUM_SERVER}），且当前在 safe_run 沙箱内 ⇒ 不在此启动。" >&2
+    echo "   原因：沙箱内起的服务继承 Seatbelt profile 且终身不可脱，做 WDA 时会被拒（残废服务）。" >&2
+    echo "   需**主 agent 在宿主**执行（不经 safe_run）：" >&2
+    echo "     bash ${_SELF_DIR}/host_server.sh ensure --project-root ${PWD} --port ${APPIUM_PORT}" >&2
+    return 3
   fi
   echo "🚀 启动 Appium 服务（:${APPIUM_PORT}，日志: ${APPIUM_LOG}）..."
   nohup appium --port "$APPIUM_PORT" > "$APPIUM_LOG" 2>&1 &
@@ -165,13 +183,19 @@ write_caps_ios_device() {
   # 约定：xctestrun 必须与 `Build/Products/Debug-iphoneos/` 同级，否则 __TESTROOT__ 失效。
   local xctestrun="${IOS_XCTESTRUN:-}" bootstrap=""
   if [ -z "$xctestrun" ]; then
-    # 自动发现：`wda_prepare.sh` 的默认产物目录（build/debug/wda-prebuilt/Build/Products/）
-    # 里若有按本设备命名的 xctestrun，就直接走 xctestrun 路线，免得把**含设备 UDID 的绝对路径**
-    # 写进随项目提交的 .debug.env。找不到 ⇒ 维持旧行为（会话期跑 xcodebuild）。
-    local wdap="build/debug/wda-prebuilt/Build/Products" pver0
+    # 自动发现：`wda_prepare.sh` 的产物目录里若有按本设备命名的 xctestrun，就直接走
+    # xctestrun 路线，免得把**含设备 UDID 的绝对路径**写进随项目提交的 .debug.env。
+    # 目录顺序：`debug-info/wda-prebuilt`（持久，构建脚本 rm -rf build 不会清）优先，
+    # 再回落旧的 `build/debug/wda-prebuilt`（历史产物位置）。找不到 ⇒ 会话期跑 xcodebuild。
+    local wdap pver0
     pver0="$(ideviceinfo -u "$udid" -k ProductVersion 2>/dev/null || true)"
-    if [ -n "$pver0" ] && [ -f "$wdap/${udid}_${pver0}.xctestrun" ]; then
-      xctestrun="$wdap/${udid}_${pver0}.xctestrun"
+    if [ -n "$pver0" ]; then
+      for wdap in "debug-info/wda-prebuilt/Build/Products" "build/debug/wda-prebuilt/Build/Products"; do
+        if [ -f "$wdap/${udid}_${pver0}.xctestrun" ]; then
+          xctestrun="$wdap/${udid}_${pver0}.xctestrun"
+          break
+        fi
+      done
     fi
   fi
   if [ -n "$xctestrun" ]; then
