@@ -1,0 +1,27 @@
+{
+ "version": 1,
+ "template": true,
+ "name": "login",
+ "platform": "android",
+ "profile": "ui",
+ "device": "",
+ "precond": "已装 App 且在登录页；凭据文件 .debug-login.secret 存在（仅 owner 可读），组内含 ACCOUNT / PASSWORD 两键",
+ "note": "通用登录模板：账号明文走 --text-from（不落 argv/会话记录），密码必须 --mask。字段关键词与首页文案按项目改。device 留空 ⇒ 按 adb 默认首台执行。",
+ "grade": "A",
+ "observe_only": false,
+ "steps": [
+  "android/run.sh",
+  "android/settle.sh",
+  "android/input.sh --field 账号 --text-from .debug-login.secret --key ACCOUNT",
+  "android/input.sh --field 密码 --text-from .debug-login.secret --key PASSWORD --mask",
+  "tap_verify.sh 登录 --expect has:首页",
+  "assert_page.sh --file docs/test/assert-login.txt"
+ ],
+ "created_at": 0,
+ "updated_at": 0,
+ "last_success_at": null,
+ "success": 0,
+ "failure": 0,
+ "consecutive_failures": 0,
+ "status": "active"
+}
