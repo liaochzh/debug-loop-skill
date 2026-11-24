@@ -17,7 +17,7 @@
 set -euo pipefail
 
 TEAM_ID=""; PROFILE=""; WDA_BID=""; IDENT="Apple Development"
-OUT_DIR="$(pwd)/build/debug/wda-prebuilt"
+OUT_DIR="$(pwd)/debug-info/wda-prebuilt"
 
 while [ $# -gt 0 ]; do
   case "$1" in
