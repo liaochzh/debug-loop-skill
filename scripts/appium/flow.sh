@@ -12,7 +12,8 @@
 #   - `.debug.env` 的 IOS_ATTACH_ONLY=1 ⇒ 会话只 attach 已运行 App（forceAppLaunch=false），
 #     不会重启被测 App；冷启动 debug 包会命中 iOS 14+ 限制页
 #   - 退后台用 background 步骤（mobile: backgroundApp）；`home` 在真机上会静默空操作
-#   - 退出码: 0 全部步骤成功 / 1 某步失败 / 2 用法错误 / 3 会话或驱动错误
+#   - 退出码: 0 全部步骤成功 / 1 某步失败 / 2 用法错误 / 3 会话或驱动错误，**或沙箱内宿主 Appium 服务未就绪**
+#     （3 的后一种情形：stderr 给出 host_server.sh 宿主命令 ⇒ 交回主 agent 起服务，**不要重试**）
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
