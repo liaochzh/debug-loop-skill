@@ -32,7 +32,7 @@ set -uo pipefail   # 故意不加 -e：单例失败要继续跑完其余用例
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 TARGET="$SCRIPT_DIR/safe_run.sh"
-PROJ_TEST="$HOME/Projects/.dbg-safe-run-test.$$"
+PROJ_TEST="$HOME/projects/.dbg-safe-run-test.$$"
 
 VERBOSE=0; FILTER=""
 while [ $# -gt 0 ]; do
@@ -177,6 +177,31 @@ if run_case "N4-写面正向"; then
   echo ""
 fi
 
+# ---------- N4b 项目根大小写对称（2026-11-16 事故回归桩） ----------
+# 事故：ALLOW_ROOTS 只登记一种拼写 ⇒ 另一拼写恒 rc=2（两个方向都踩过）。
+#   bash 下 `cd && pwd -P` **保留调用方拼写的大小写**（不归一到磁盘真名），故两种拼写都须接受；
+#   同时项目区**本体**两种拼写都必须拒（等值守卫），防止 build profile 放开整个项目区。
+# 仅在大小写不敏感卷上有意义（两拼写同 inode）；敏感卷上跳过，避免误判。
+if run_case "N4b-项目根大小写对称"; then
+  _lower="$HOME/projects"; _upper="$HOME/Projects"
+  if [ -d "$_lower" ] && [ "$_lower" -ef "$_upper" ]; then
+    mkdir -p "$PROJ_TEST"
+    _upper_sub="${PROJ_TEST/projects/Projects}"
+    OUT="$(timeout 10 bash "$TARGET" --project-root "$_upper_sub" -- /usr/bin/true 2>&1)"; RC=$?
+    [ "$VERBOSE" = "1" ] && echo "$OUT"
+    expect_rc "N4b 大写拼写子路径可接受（与小写对称）" 0 "$RC"
+    OUT="$(timeout 10 bash "$TARGET" --project-root "$_upper" -- /usr/bin/true 2>&1)"; RC=$?
+    [ "$VERBOSE" = "1" ] && echo "$OUT"
+    expect_rc "N4b 大写拼写项目区本体被拒" 2 "$RC"
+    OUT="$(timeout 10 bash "$TARGET" --project-root "$_lower" -- /usr/bin/true 2>&1)"; RC=$?
+    [ "$VERBOSE" = "1" ] && echo "$OUT"
+    expect_rc "N4b 小写拼写项目区本体被拒" 2 "$RC"
+  else
+    echo "  ⏭  跳过 N4b：非大小写不敏感卷或 ~/projects 不存在（两拼写非同 inode）"
+  fi
+  echo ""
+fi
+
 # ---------- N5 出网面 ----------
 if run_case "N5-出网"; then
   OUT="$(timeout 20 bash "$TARGET" --no-net -- curl -sS --max-time 5 -o /dev/null -w '%{http_code}' https://example.com 2>&1)"; RC=$?
@@ -302,7 +327,7 @@ if run_case "N12-flutter缓存"; then
     FC="$(cd "$FR/bin/cache" 2>/dev/null && pwd -P || true)"
     [ "$FC" = "$FR/bin/cache" ] || { N12_SKIP="<SDK>/bin/cache 不是真实目录（可能经符号链接）"; FR=""; }
   fi
-  for _b in "$HOME/Projects" /Volumes /private/tmp "${TMPDIR:-/tmp}"; do
+  for _b in "$HOME/projects" /Volumes /private/tmp "${TMPDIR:-/tmp}"; do
     [ "$FR" = "$_b" ] && N12_SKIP="SDK 根等于白名单根本体"
   done
   if [ -n "$N12_SKIP" ]; then
