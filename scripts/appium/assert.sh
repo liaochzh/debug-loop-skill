@@ -5,7 +5,8 @@
 #   ./assert.sh "<selector>" --platform macos|ios-device [--using ...] [--app-id] [--udid] [--team-id]
 #   ./assert.sh "<selector>" --not-visible ...     # 断言不存在
 #
-# 退出码: 0 = 断言成立；1 = 断言失败；3 = 驱动/会话错误
+# 退出码: 0 = 断言成立；1 = 断言失败；3 = 驱动/会话错误，**或沙箱内宿主 Appium 服务未就绪**
+#   （3 的后一种情形：stderr 会给出 host_server.sh 的宿主命令 ⇒ 交回主 agent 起服务，**不要重试**）
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
