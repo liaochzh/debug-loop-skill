@@ -82,7 +82,13 @@ TMPBASE="${TMPROOT}/opencode"
 mkdir -p "$TMPBASE" 2>/dev/null || true
 
 # ---- 项目根白名单：不允许把 $HOME / / 之类声明成「项目根」（否则 build profile 会放开整个家目录）
+# ⚠ 大小写：in_allow_roots 用 case 做**大小写敏感**前缀匹配，而 ROOT_REAL 取自 `cd && pwd -P`，
+#   在 bash 下**保留调用方拼写的大小写**（实测：大写输入不会归一成磁盘真名；交互 zsh 才会归一）。
+#   本机磁盘真名为小写 `projects`，但调用方可能拼大写 `Projects`（macOS FS 不敏感，二者同一目录）。
+#   故**两种拼写都登记**：只登记一种会让另一方向恒 rc=2（2026-11-16 事故的两个方向都踩过）。
+#   下方等值守卫对两种拼写同样生效 ⇒ 项目区**本体**依旧被拒，未放宽面。
 ALLOW_ROOTS=(
+  "${HOME_DIR}/projects"
   "${HOME_DIR}/Projects"
   "/Volumes"
   "/private/tmp"
@@ -115,7 +121,7 @@ esac
 if [ "$_deny_root" -eq 1 ] && [ "$EXPLICIT_ROOT" -eq 1 ]; then
   die_usage "拒绝把 '${ROOT_REAL}' 当作项目根（请给真正的项目目录）"
 fi
-# 显式指定的根不得**等于**白名单条目本体（`--project-root ~/Projects` 会让 build profile 放开整个项目区）
+# 显式指定的根不得**等于**白名单条目本体（`--project-root ~/projects` 会让 build profile 放开整个项目区）
 if [ "$EXPLICIT_ROOT" -eq 1 ]; then
   for _base in "${ALLOW_ROOTS[@]}"; do
     if [ "${ROOT_REAL%/}" = "${_base%/}" ]; then _deny_root=1; break; fi
